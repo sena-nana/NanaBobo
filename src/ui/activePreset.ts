@@ -6,13 +6,15 @@ import { installTauriNativeAppearanceAdapter } from "@lilia/ui/runtime/tauri";
 import ContextMenuHost from "@lilia/ui/components/ContextMenuHost";
 import OverlayHost from "@lilia/ui/components/OverlayHost";
 import appConfigJson from "../../app.config.json";
-import { defineComponent, h, type Component } from "vue";
+import { defineAsyncComponent, defineComponent, h, type Component } from "vue";
 import type { AppUIPresetAdapter } from "./contract";
 import type { NanaBoboUIPresetAdapter } from "./types";
 import ActiveShell from "./ActiveShell.vue";
 
 const upstream = liliaPresetDefinition as AppUIPresetAdapter<Component>;
 const Hosts = defineComponent({ setup: () => () => [h(ContextMenuHost), h(OverlayHost)] });
+const createSettingsSection = (key: "LiliaAppearanceSection" | "LiliaAboutSection") =>
+  defineAsyncComponent(() => import("@lilia/ui/settings").then((module) => module[key]));
 const settings = createSettingsModel({
   path: "/settings", defaultTab: "appearance", description: "偏好设置会保存到本地。",
   tabs: [
@@ -20,8 +22,8 @@ const settings = createSettingsModel({
     { key: "about", label: "关于", icon: resolveLiliaIcon("info") },
   ],
   sections: {
-    appearance: () => import("@lilia/ui/settings").then((module) => ({ default: module.LiliaAppearanceSection })),
-    about: () => import("@lilia/ui/settings").then((module) => ({ default: module.LiliaAboutSection })),
+    appearance: createSettingsSection("LiliaAppearanceSection"),
+    about: createSettingsSection("LiliaAboutSection"),
   },
 });
 
