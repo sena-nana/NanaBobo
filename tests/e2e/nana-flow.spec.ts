@@ -6,15 +6,12 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("shows the real account and live-room tools", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "Nana播播工具箱" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "B站账号" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "直播间信息" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "直播间号" })).toBeVisible();
-  await expect(page.getByText("请在桌面应用中管理B站账号。")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "登录后连接直播间" })).toBeVisible();
+  await expect(page.getByText("请在桌面应用中扫码登录B站账号。")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "直播间号" })).toHaveCount(0);
 });
 
 test("does not fake a room lookup in browser mode", async ({ page }) => {
-  await page.getByRole("textbox", { name: "直播间号" }).fill("abc");
-  await page.getByRole("button", { name: "查询" }).click();
-  await expect(page.getByRole("alert")).toHaveText("请在桌面应用中查询直播间。");
+  await expect(page.getByRole("textbox", { name: "直播间号" })).toHaveCount(0);
+  await expect(page.locator('[data-agent-id="room.panel"]')).toHaveCount(0);
 });

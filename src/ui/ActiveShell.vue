@@ -20,6 +20,9 @@ const settingsMode = computed(() => settings !== null && route.path === settings
 const activeSettingsTab = computed(() => settings ? normalizeSettingsTab(settings, route.query.tab) : "");
 const sidebarNav: SidebarNavItem[] = [
   { key: "overview", to: "/", label: "首页", icon: resolveLiliaIcon("home") },
+  { key: "assistant", to: "/assistant", label: "主播助手", icon: resolveLiliaIcon("message-square") },
+  { key: "stats", to: "/stats", label: "数据统计", icon: resolveLiliaIcon("gauge") },
+  { key: "history", to: "/history", label: "历史记录", icon: resolveLiliaIcon("folder") },
 ];
 </script>
 

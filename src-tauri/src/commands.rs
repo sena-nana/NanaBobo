@@ -5,19 +5,23 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::{
-    bilibili::{BilibiliClient, BilibiliError, QrPollResult, QrSession},
+    bilibili::{BilibiliClient, BilibiliError, DanmakuManager, QrPollResult, QrSession},
     credential_store::{CredentialStore, CredentialStoreError},
-    models::{AccountStatus, AuthPollResponse, QrStartResponse, RoomInfo},
+    models::{
+        AccountStatus, AuthPollResponse, DanmakuConnection, DanmakuStatus, QrStartResponse,
+        RoomInfo,
+    },
 };
 
 pub struct AppState {
     pub client: BilibiliClient,
     pub credentials: Arc<dyn CredentialStore>,
     pub qr_sessions: Mutex<HashMap<String, QrSession>>,
+    pub danmaku: Arc<DanmakuManager>,
 }
 
 impl AppState {
@@ -26,6 +30,7 @@ impl AppState {
             client,
             credentials,
             qr_sessions: Mutex::new(HashMap::new()),
+            danmaku: Arc::new(DanmakuManager::default()),
         }
     }
 }
@@ -39,6 +44,7 @@ pub enum ErrorCode {
     QrExpired,
     RequestLimited,
     UpstreamUnavailable,
+    ConnectionUnavailable,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -59,6 +65,13 @@ impl AppError {
         Self {
             code: ErrorCode::QrExpired,
             message: "二维码已过期，请重新生成。".to_owned(),
+        }
+    }
+
+    fn connection_unavailable() -> Self {
+        Self {
+            code: ErrorCode::ConnectionUnavailable,
+            message: "弹幕连接暂时不可用，请稍后重试。".to_owned(),
         }
     }
 }
@@ -186,7 +199,8 @@ pub async fn auth_status(state: State<'_, AppState>) -> Result<AccountStatus, Ap
 }
 
 #[tauri::command]
-pub fn auth_logout(state: State<'_, AppState>) -> Result<(), AppError> {
+pub fn auth_logout(app: AppHandle, state: State<'_, AppState>) -> Result<(), AppError> {
+    state.danmaku.stop(&app, None);
     state.credentials.clear()?;
     state
         .qr_sessions
@@ -194,6 +208,45 @@ pub fn auth_logout(state: State<'_, AppState>) -> Result<(), AppError> {
         .map_err(|_| AppError::credential_store())?
         .clear();
     Ok(())
+}
+
+#[tauri::command]
+pub fn danmaku_start(
+    room_id: u64,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DanmakuConnection, AppError> {
+    if room_id == 0 {
+        return Err(AppError {
+            code: ErrorCode::InvalidInput,
+            message: "请输入有效的直播间号。".to_owned(),
+        });
+    }
+    state
+        .danmaku
+        .start(app, state.client.clone(), room_id)
+        .map_err(|_| AppError::connection_unavailable())
+}
+
+#[tauri::command]
+pub fn danmaku_stop(
+    connection_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if connection_id.trim().is_empty() {
+        return Err(AppError {
+            code: ErrorCode::InvalidInput,
+            message: "弹幕连接无效，请重新连接。".to_owned(),
+        });
+    }
+    state.danmaku.stop(&app, Some(connection_id.trim()));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn danmaku_status(state: State<'_, AppState>) -> Result<DanmakuStatus, AppError> {
+    Ok(state.danmaku.status())
 }
 
 #[tauri::command]

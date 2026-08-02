@@ -21,6 +21,9 @@ pub fn run() {
             commands::auth_status,
             commands::auth_logout,
             commands::room_get_info,
+            commands::danmaku_start,
+            commands::danmaku_stop,
+            commands::danmaku_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

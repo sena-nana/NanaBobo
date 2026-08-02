@@ -139,3 +139,5 @@ export function useAccountSession(
     logout,
   };
 }
+
+export type AccountSession = ReturnType<typeof useAccountSession>;

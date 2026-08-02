@@ -21,9 +21,9 @@ afterEach(() => { while (mounted.length) mounted.pop()?.(); });
 describe("NanaBobo routes", () => {
   it("renders the real home workflow and reachable settings navigation", async () => {
     const { root } = await mountAt("/");
-    await screen.findByRole("heading", { level: 1, name: "Nana播播工具箱" });
+    await screen.findByRole("heading", { level: 2, name: "登录后连接直播间" });
     expect(root.querySelector('[data-agent-id="account.panel"]')).not.toBeNull();
-    expect(root.querySelector('[data-agent-id="room.panel"]')).not.toBeNull();
+    expect(root.querySelector('[data-agent-id="room.panel"]')).toBeNull();
     expect(screen.getByRole("link", { name: "设置" }).getAttribute("href")).toBe("/settings");
   });
 
@@ -41,6 +41,6 @@ describe("NanaBobo routes", () => {
 
   it("redirects unknown paths to the real home route", async () => {
     await mountAt("/missing");
-    await screen.findByRole("heading", { level: 1, name: "Nana播播工具箱" });
+    await screen.findByRole("heading", { level: 2, name: "登录后连接直播间" });
   });
 });

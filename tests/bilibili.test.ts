@@ -13,9 +13,11 @@ const room: RoomInfo = {
   room_id: 123,
   owner_id: 7,
   owner_name: "Nana",
+  owner_avatar_url: "https://example.com/avatar.png",
   title: "直播测试",
   live_status: "live",
   viewer_count: 42,
+  follower_count: 8,
   cover_url: null,
   fetched_at: 1,
 };
@@ -50,6 +52,11 @@ describe("account session state", () => {
       getStatus: vi.fn(async () => account),
       logout: vi.fn(async () => undefined),
       getRoomInfo: vi.fn(async () => room),
+      startDanmaku: vi.fn(),
+      stopDanmaku: vi.fn(),
+      getDanmakuStatus: vi.fn(),
+      listenDanmakuMessage: vi.fn(),
+      listenDanmakuStatus: vi.fn(),
     };
     const session = useAccountSession(api, () => true);
 
@@ -75,6 +82,11 @@ describe("room lookup state", () => {
       getStatus: vi.fn(),
       logout: vi.fn(),
       getRoomInfo: vi.fn(async () => room),
+      startDanmaku: vi.fn(),
+      stopDanmaku: vi.fn(),
+      getDanmakuStatus: vi.fn(),
+      listenDanmakuMessage: vi.fn(),
+      listenDanmakuStatus: vi.fn(),
     };
     const lookup = useRoomInfo(api, () => true);
 

@@ -13,10 +13,12 @@ export function useRoomInfo(
   const info = ref<RoomInfo | null>(null);
   const loading = ref(false);
   const error = ref<BilibiliApiError | null>(null);
+  let requestVersion = 0;
 
-  async function query() {
+  async function query(options: { preserveInfo?: boolean } = {}) {
+    const currentRequest = ++requestVersion;
     error.value = null;
-    info.value = null;
+    if (!options.preserveInfo) info.value = null;
     if (!available) {
       error.value = { code: "desktop_unavailable", message: "请在桌面应用中查询直播间。" };
       return;
@@ -28,15 +30,26 @@ export function useRoomInfo(
     }
     loading.value = true;
     try {
-      info.value = await api.getRoomInfo(normalized);
+      const result = await api.getRoomInfo(normalized);
+      if (currentRequest === requestVersion) info.value = result;
     } catch (cause) {
-      error.value = normalizeBilibiliError(cause);
+      if (currentRequest === requestVersion) error.value = normalizeBilibiliError(cause);
     } finally {
-      loading.value = false;
+      if (currentRequest === requestVersion) loading.value = false;
     }
   }
 
-  onBeforeUnmount(() => { loading.value = false; });
+  function clear() {
+    requestVersion += 1;
+    roomId.value = "";
+    info.value = null;
+    loading.value = false;
+    error.value = null;
+  }
 
-  return { available, roomId, info, loading, error, query };
+  onBeforeUnmount(() => { requestVersion += 1; loading.value = false; });
+
+  return { available, roomId, info, loading, error, query, clear };
 }
+
+export type RoomInfoSession = ReturnType<typeof useRoomInfo>;

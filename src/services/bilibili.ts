@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  AccountStatus,
-  AuthPollResponse,
-  QrStartResponse,
-  RoomInfo,
+    AccountStatus,
+    AuthPollResponse,
+    DanmakuConnection,
+    DanmakuMessage,
+    DanmakuStatus,
+    QrStartResponse,
+    RoomInfo,
 } from "../contracts/bilibili";
 
 export type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -14,6 +18,11 @@ export interface BilibiliApi {
   getStatus: () => Promise<AccountStatus>;
   logout: () => Promise<void>;
   getRoomInfo: (roomId: string) => Promise<RoomInfo>;
+  startDanmaku: (roomId: number) => Promise<DanmakuConnection>;
+  stopDanmaku: (connectionId: string) => Promise<void>;
+  getDanmakuStatus: () => Promise<DanmakuStatus>;
+  listenDanmakuMessage: (handler: (message: DanmakuMessage) => void) => Promise<UnlistenFn>;
+  listenDanmakuStatus: (handler: (status: DanmakuStatus) => void) => Promise<UnlistenFn>;
 }
 
 export function createBilibiliApi(invokeCommand: TauriInvoke = invoke): BilibiliApi {
@@ -23,6 +32,11 @@ export function createBilibiliApi(invokeCommand: TauriInvoke = invoke): Bilibili
     getStatus: () => invokeCommand<AccountStatus>("auth_status"),
     logout: () => invokeCommand<void>("auth_logout"),
     getRoomInfo: (roomId) => invokeCommand<RoomInfo>("room_get_info", { roomId }),
+    startDanmaku: (roomId) => invokeCommand<DanmakuConnection>("danmaku_start", { roomId }),
+    stopDanmaku: (connectionId) => invokeCommand<void>("danmaku_stop", { connectionId }),
+    getDanmakuStatus: () => invokeCommand<DanmakuStatus>("danmaku_status"),
+    listenDanmakuMessage: (handler) => listen<DanmakuMessage>("nanabobo://danmaku/message", (event) => handler(event.payload)),
+    listenDanmakuStatus: (handler) => listen<DanmakuStatus>("nanabobo://danmaku/status", (event) => handler(event.payload)),
   };
 }
 

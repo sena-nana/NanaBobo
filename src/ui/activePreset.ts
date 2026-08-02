@@ -32,6 +32,9 @@ export const nanaBoboPreset: NanaBoboUIPresetAdapter = {
   shell: ActiveShell,
   routes: [
     { path: "", component: () => import("../features/home/HomePage.vue") },
+    { path: "assistant", component: () => import("../features/danmaku/DanmakuAssistantPage.vue") },
+    { path: "stats", component: () => import("../features/stats/StatsPage.vue") },
+    { path: "history", component: () => import("../features/history/HistoryPage.vue") },
     { path: "settings", component: () => import("@lilia/ui/settings").then((module) => module.LiliaSettingsPage) },
   ],
   hosts: Hosts,

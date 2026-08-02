@@ -3,3 +3,5 @@ export {
   InteractiveCard, ListItem, Progress, Select, Skeleton, StatusBadge,
   Switch, Tabs, Textarea, Toast, ValidationMessage,
 } from "@lilia/ui";
+
+export { usePersistentString } from "@lilia/ui/composables";

@@ -13,6 +13,9 @@ const QR_GENERATE_URL: &str = "https://passport.bilibili.com/x/passport-login/we
 const QR_POLL_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
 const NAV_URL: &str = "https://api.bilibili.com/x/web-interface/nav";
 const ROOM_INFO_URL: &str = "https://api.live.bilibili.com/room/v1/Room/get_info";
+const ANCHOR_INFO_URL: &str =
+    "https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room";
+const DANMAKU_INFO_URL: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
 
 #[derive(Debug, Error)]
 pub enum BilibiliError {
@@ -132,10 +135,12 @@ impl BilibiliClient {
             .map_err(BilibiliError::Request)?;
         let envelope: ApiEnvelope<RoomData> = parse_json(response).await?;
         let data = envelope.into_data()?;
+        let owner_avatar_url = self.anchor_avatar(room_id).await.unwrap_or_default();
         Ok(RoomInfo {
             room_id: data.room_id,
             owner_id: data.uid,
             owner_name: non_empty(data.uname),
+            owner_avatar_url,
             title: data.title,
             live_status: match data.live_status {
                 1 => "live".to_owned(),
@@ -143,9 +148,55 @@ impl BilibiliClient {
                 _ => "offline".to_owned(),
             },
             viewer_count: data.online,
+            follower_count: data.attention,
             cover_url: first_non_empty([data.room_cover, data.user_cover, data.keyframe]),
             fetched_at: now_seconds(),
         })
+    }
+
+    pub async fn danmaku_info(&self, room_id: u64) -> Result<DanmakuConnectionInfo, BilibiliError> {
+        let response = self
+            .http
+            .get(DANMAKU_INFO_URL)
+            .query(&[("id", room_id)])
+            .send()
+            .await
+            .map_err(BilibiliError::Request)?;
+        let envelope: ApiEnvelope<DanmakuInfoData> = parse_json(response).await?;
+        let data = envelope.into_data()?;
+        if data.token.trim().is_empty() || data.host_list.is_empty() {
+            return Err(BilibiliError::InvalidResponse);
+        }
+        let hosts = data
+            .host_list
+            .into_iter()
+            .filter(|host| !host.host.trim().is_empty())
+            .map(|host| DanmakuHost {
+                host: host.host,
+                wss_port: host.wss_port.max(host.port),
+            })
+            .filter(|host| host.wss_port > 0)
+            .collect::<Vec<_>>();
+        if hosts.is_empty() {
+            return Err(BilibiliError::InvalidResponse);
+        }
+        Ok(DanmakuConnectionInfo {
+            token: data.token,
+            hosts,
+        })
+    }
+
+    async fn anchor_avatar(&self, room_id: u64) -> Result<Option<String>, BilibiliError> {
+        let response = self
+            .http
+            .get(ANCHOR_INFO_URL)
+            .query(&[("roomid", room_id)])
+            .send()
+            .await
+            .map_err(BilibiliError::Request)?;
+        let envelope: ApiEnvelope<AnchorData> = parse_json(response).await?;
+        let data = envelope.into_data()?;
+        Ok(data.info.and_then(|info| non_empty(info.face)))
     }
 }
 
@@ -215,11 +266,53 @@ struct RoomData {
     #[serde(default)]
     online: u64,
     #[serde(default)]
+    attention: Option<u64>,
+    #[serde(default)]
     room_cover: String,
     #[serde(default)]
     user_cover: String,
     #[serde(default)]
     keyframe: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DanmakuConnectionInfo {
+    pub token: String,
+    pub hosts: Vec<DanmakuHost>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DanmakuHost {
+    pub host: String,
+    pub wss_port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct DanmakuInfoData {
+    token: String,
+    #[serde(default)]
+    host_list: Vec<DanmakuInfoHost>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DanmakuInfoHost {
+    host: String,
+    #[serde(default)]
+    port: u16,
+    #[serde(default)]
+    wss_port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnchorData {
+    #[serde(default)]
+    info: Option<AnchorInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnchorInfo {
+    #[serde(default)]
+    face: String,
 }
 
 async fn parse_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, BilibiliError> {
@@ -313,7 +406,8 @@ mod tests {
     use reqwest::header::{HeaderMap, HeaderValue, SET_COOKIE};
 
     use super::{
-        cookie_from_login_url, cookie_from_set_cookie_headers, qr_poll_state, QrPollResult,
+        cookie_from_login_url, cookie_from_set_cookie_headers, qr_poll_state, AnchorData,
+        QrPollResult, RoomData,
     };
 
     #[test]
@@ -357,5 +451,39 @@ mod tests {
         assert_eq!(qr_poll_state(86101), Some(QrPollResult::Pending));
         assert_eq!(qr_poll_state(86090), Some(QrPollResult::Scanned));
         assert_eq!(qr_poll_state(86038), Some(QrPollResult::Expired));
+    }
+
+    #[test]
+    fn anchor_response_maps_a_safe_avatar_url() {
+        let data: AnchorData =
+            serde_json::from_str(r#"{"info":{"face":"https://i0.hdslb.com/bfs/face/avatar.png"}}"#)
+                .unwrap();
+
+        assert_eq!(
+            data.info.and_then(|info| super::non_empty(info.face)),
+            Some("https://i0.hdslb.com/bfs/face/avatar.png".to_owned(),)
+        );
+    }
+
+    #[test]
+    fn anchor_response_without_avatar_is_optional() {
+        let data: AnchorData = serde_json::from_str(r#"{"info":{}}"#).unwrap();
+
+        assert_eq!(data.info.and_then(|info| super::non_empty(info.face)), None);
+    }
+
+    #[test]
+    fn room_response_maps_optional_follower_count() {
+        let data: RoomData = serde_json::from_str(
+            r#"{"room_id":123,"uid":7,"title":"直播测试","live_status":1,"online":42,"attention":8}"#,
+        )
+        .unwrap();
+        assert_eq!(data.attention, Some(8));
+
+        let missing: RoomData = serde_json::from_str(
+            r#"{"room_id":123,"uid":7,"title":"直播测试","live_status":0,"online":0}"#,
+        )
+        .unwrap();
+        assert_eq!(missing.attention, None);
     }
 }
