@@ -1,0 +1,12 @@
+{
+  "lilia": {
+    "bytes": { "js": 212781, "css": 48520 },
+    "allowedGrowth": 0.15,
+    "minimumDynamicEntries": 4
+  },
+  "nana": {
+    "bytes": { "js": 155799, "css": 15262 },
+    "allowedGrowth": 0.15,
+    "minimumDynamicEntries": 5
+  }
+}

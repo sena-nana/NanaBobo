@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-template:
+    name: Verify ${{ matrix.ui-preset }} / ${{ matrix.ui-source }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ui-preset: [lilia, nana]
+        ui-source: [remote, local]
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Checkout local LiliaUI
+        if: matrix.ui-source == 'local'
+        uses: actions/checkout@v6
+        with:
+          repository: sena-nana/LiliaUI
+          ref: 9bb7da711100ce34945047d901073b569a4e4aa7
+          path: LiliaUI
+
+      - name: Set up Node.js and Yarn
+        uses: sena-nana/LiliaUI/.github/actions/setup-node-yarn@9bb7da711100ce34945047d901073b569a4e4aa7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Select UI preset
+        run: corepack yarn ui:preset ${{ matrix.ui-preset }} --force
+
+      - name: Select local UI source
+        if: matrix.ui-source == 'local'
+        env:
+          LILIA_UI_LOCAL_PATH: ${{ github.workspace }}\LiliaUI
+        run: corepack yarn liliaui:local
+
+      - name: Confirm immutable remote source
+        if: matrix.ui-source == 'remote'
+        run: corepack yarn install --immutable
+
+      - name: Inspect template boundary
+        run: corepack yarn agent:debug --json
+
+      - name: Verify template
+        run: corepack yarn verify
+
+      - name: Install browser
+        if: matrix.ui-preset == 'nana'
+        run: corepack yarn playwright install chromium
+
+      - name: Verify Nana workflows
+        if: matrix.ui-preset == 'nana'
+        run: corepack yarn test:e2e
+
+      - name: Verify Tauri compilation
+        run: corepack yarn tauri:build:no-bundle
+
+      - name: Show sccache stats
+        shell: pwsh
+        run: "& $env:SCCACHE_PATH --show-stats"
+
+  build-docs:
+    name: Build docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js and Yarn
+        uses: sena-nana/LiliaUI/.github/actions/setup-node-yarn@9bb7da711100ce34945047d901073b569a4e4aa7
+
+      - name: Build docs
+        run: corepack yarn docs:build

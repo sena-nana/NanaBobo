@@ -1,0 +1,16 @@
+{
+  "extends": "@lilia/config/tsconfig/app.json",
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.vue"
+  ],
+  "exclude": [
+    "src/features/nana/**",
+    "src/capabilities/**"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    }
+  ]
+}
