@@ -5,7 +5,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Tauri Template",
+        "title": "Nana播播工具箱",
         "width": 1200,
         "height": 800,
         "minWidth": 960,
@@ -20,7 +20,7 @@
       }
     ]
   },
-  "productName": "Tauri Template",
+  "productName": "Nana播播工具箱",
   "version": "0.1.0",
-  "identifier": "com.tauritemplate.desktop"
+  "identifier": "com.senanana.nanabobo"
 }

@@ -2,16 +2,16 @@ import { screen, waitFor } from "@testing-library/vue";
 import { defineComponent, h } from "vue";
 import { RouterView, createMemoryHistory } from "vue-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { createTemplateApp } from "../src/app";
-import type { TemplateUIPresetAdapter } from "../src/ui/preset";
+import { createNanaBoboApp } from "../src/app";
+import type { NanaBoboUIPresetAdapter } from "../src/ui/preset";
 
 const mounted: Array<() => void> = [];
 afterEach(() => { while (mounted.length) mounted.pop()?.(); });
 
-async function mountPreset(preset: TemplateUIPresetAdapter, path = "/") {
+async function mountPreset(preset: NanaBoboUIPresetAdapter, path = "/") {
   const root = document.createElement("div");
   document.body.append(root);
-  const { app, router } = createTemplateApp(createMemoryHistory(), preset);
+  const { app, router } = createNanaBoboApp(createMemoryHistory(), preset);
   await router.push(path);
   await router.isReady();
   app.mount(root);
@@ -29,7 +29,7 @@ const policy = {
   destructiveAction: "confirm-or-undo",
 } as const;
 
-function mockPreset(id: "lilia" | "nana", label: string): TemplateUIPresetAdapter {
+function mockPreset(id: "lilia" | "nana", label: string): NanaBoboUIPresetAdapter {
   const Shell = defineComponent({
     setup: () => () => h("main", { "data-agent-id": `mock.${id}.shell` }, h(RouterView)),
   });

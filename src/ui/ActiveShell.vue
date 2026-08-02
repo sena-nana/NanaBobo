@@ -31,7 +31,7 @@ const sidebarNav: SidebarNavItem[] = [
       backdrop-effect="none"
     >
       <LiliaSectionNavigation
-        id="template-navigation"
+        id="nanabobo-navigation"
         :surface-mode="surfaces.sidebar"
       >
         <LiliaSettingsSidebar
@@ -46,7 +46,7 @@ const sidebarNav: SidebarNavItem[] = [
           aria-label="主导航"
           :surface-mode="surfaces.sidebar"
         >
-          <nav class="template-sidebar-nav" aria-label="主导航">
+          <nav class="nanabobo-sidebar-nav" aria-label="主导航">
             <LiliaSidebarNavRow
               v-for="item in sidebarNav"
               :key="item.key"
@@ -58,7 +58,7 @@ const sidebarNav: SidebarNavItem[] = [
         </LiliaSidebarFrame>
       </LiliaSectionNavigation>
       <LiliaPrimaryContent
-        id="template-primary"
+        id="nanabobo-primary"
         :surface-mode="surfaces.main"
       >
         <RouterView />
@@ -68,5 +68,5 @@ const sidebarNav: SidebarNavItem[] = [
 </template>
 
 <style scoped>
-.template-sidebar-nav { display: flex; flex-direction: column; gap: 1px; min-height: 0; }
+.nanabobo-sidebar-nav { display: flex; flex-direction: column; gap: 1px; min-height: 0; }
 </style>

@@ -1,18 +1,25 @@
-# 双层验收矩阵
+# 验收矩阵
 
-CI 对远端固定依赖和本地 LiliaUI 联调依赖分别执行边界检查、测试、生产构建和 Tauri 无安装包编译：
-
-| 依赖来源 | 预期 Layer |
+| 场景 | 预期行为 |
 | --- | --- |
-| 固定 Git commit | `@lilia/ui` |
-| 本地 portal | `@lilia/ui` |
+| 启动桌面应用 | 首页展示账号和直播间信息工具，不出现未接通功能 |
+| 未登录 | 显示扫码登录入口；不显示伪造账号 |
+| 二维码过期 | 明确显示过期状态，可重新生成二维码 |
+| 扫码成功 | 显示脱敏账号信息，登录态写入 OS Keyring |
+| 重启应用 | 通过真实账号状态接口恢复登录状态 |
+| 退出登录 | 清除 Keyring 凭据并回到未登录状态 |
+| 房间号为空或非法 | 阻止请求并显示输入错误 |
+| B站接口限流或不可用 | 显示可恢复错误，不泄露上游响应 |
+| 浏览器开发模式 | 不伪造 Tauri 数据，明确提示需使用桌面应用 |
 
-## 本地完整检查
+## 检查命令
 
-```bash
-yarn agent:debug --json
-yarn verify
-yarn tauri:build:no-bundle
-```
+`yarn agent:debug --json`
 
-构建会生成 `dist/ui-bundle-report.json`，并与 `tests/bundle-baseline.json` 比较。报告必须证明单 Layer、异步入口数量和体积预算同时满足。
+`yarn test`
+
+`yarn build`
+
+`cargo check --manifest-path src-tauri/Cargo.toml`
+
+`yarn verify`

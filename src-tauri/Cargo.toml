@@ -1,12 +1,12 @@
 [package]
-name = "tauri_template"
+name = "nanabobo"
 version = "0.1.0"
-description = "A minimal Tauri application template"
-authors = ["you"]
+description = "Nana播播工具箱"
+authors = ["sena-nana"]
 edition = "2021"
 
 [lib]
-name = "tauri_template_lib"
+name = "nanabobo_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -16,6 +16,13 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["image-png", "macos-private-api"] }
 tauri-plugin-lilia = { git = "https://github.com/sena-nana/LiliaUI", rev = "fefcd3bc4a4a454276f2162bc21ab4faef14fd3f" }
 tauri-plugin-store = "2"
+keyring = { version = "3.6", features = ["windows-native"] }
+qrcode = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 serde_json = "1"

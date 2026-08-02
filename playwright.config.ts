@@ -10,7 +10,7 @@ export default defineConfig({
     viewport: { width: 1280, height: 800 },
   },
   webServer: {
-    command: "cross-env VITE_TEMPLATE_MOCK_FAILURE=1 yarn dev --host 127.0.0.1 --port 1431",
+    command: "yarn dev --host 127.0.0.1 --port 1431",
     url: "http://127.0.0.1:1431",
     reuseExistingServer: false,
     timeout: 30_000,

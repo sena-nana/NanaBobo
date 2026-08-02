@@ -31,18 +31,29 @@ export default defineToolsProfile({
     ["src/overlays.ts", "application overlay composition"],
     ["src/ui/index.ts", "active UI facade"],
     ["src/ui/preset.ts", "active preset adapter"],
-    [isNana ? "src/features/nana/home/HomePage.vue" : "src/features/home/HomePage.vue", "default application page"],
+    ["src/features/home/HomePage.vue", "default application page"],
+    ["src/features/account/AccountPanel.vue", "Bilibili account workflow"],
+    ["src/features/live/RoomInfoPanel.vue", "live room lookup workflow"],
     ["tests/app.test.ts", "explicit application assembly test"],
-    ["tests/tooling.test.ts", "template tooling contract tests"],
+    ["tests/tooling.test.ts", "NanaBobo tooling contract tests"],
     ["docs/guide/development.md", "development workflow"],
   ],
   agentTargetFiles: {
-    [isNana ? "src/features/nana/home/HomePage.vue" : "src/features/home/HomePage.vue"]: [
-      ...(isNana ? [["home.page"], ["home.recent"], ["home.device"]] : [
-        ["home.page"],
-        ["home.header"],
-        ["home.start-card"],
-      ]),
+    "src/features/home/HomePage.vue": [
+      ["home.page"],
+      ["home.header"],
+    ],
+    "src/features/account/AccountPanel.vue": [
+      ["account.panel"],
+      ["account.login"],
+      ["account.logout"],
+      ["account.qr"],
+    ],
+    "src/features/live/RoomInfoPanel.vue": [
+      ["room.panel"],
+      ["room.input"],
+      ["room.query"],
+      ["room.info"],
     ],
   },
   boundaries: {
@@ -59,7 +70,7 @@ export default defineToolsProfile({
   },
   entrypoints: [
     { id: "dev", command: "yarn dev", purpose: "start the frontend development server" },
-    { id: "agent-debug", command: "yarn agent:debug --json", purpose: "inspect template readiness" },
+    { id: "agent-debug", command: "yarn agent:debug --json", purpose: "inspect NanaBobo readiness" },
     { id: "test", command: "yarn test", purpose: "run application behavior tests" },
     { id: "verify", command: "yarn verify", purpose: "run the complete application verification" },
   ],

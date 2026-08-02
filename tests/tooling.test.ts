@@ -20,8 +20,8 @@ function yarnRun(args: string[], options: Parameters<typeof spawnSync>[2]) {
   return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "yarn.cmd", ...args], options);
 }
 
-describe("单应用模板工具链", () => {
-  it("Agent 调试入口输出模板边界和可执行验证入口", () => {
+describe("NanaBobo 工具链", () => {
+  it("Agent 调试入口输出应用边界和可执行验证入口", () => {
     const run = yarnRun(["agent:debug", "--json"], {
       cwd: resolve("."),
       encoding: "utf-8",

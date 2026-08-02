@@ -7,18 +7,18 @@ import {
 import AppRoot from "./AppRoot.vue";
 import { commands } from "./commands";
 import { installCommandRegistry } from "./ui/commands";
-import { activeUIPreset, type TemplateUIPresetAdapter } from "./ui/preset";
+import { activeUIPreset, type NanaBoboUIPresetAdapter } from "./ui/preset";
 
-export function createTemplateApp(
+export function createNanaBoboApp(
   history?: RouterHistory,
-  preset: TemplateUIPresetAdapter = activeUIPreset,
+  preset: NanaBoboUIPresetAdapter = activeUIPreset,
 ) {
   const app = createApp(AppRoot, {
     provider: preset.provider,
     policy: preset.policy,
     hosts: preset.hosts,
   });
-  const router = createTemplateRouter(history, preset);
+  const router = createNanaBoboRouter(history, preset);
 
   preset.install?.(app);
   for (const capability of preset.appCapabilities ?? []) capability.install(app);
@@ -34,9 +34,9 @@ export function createTemplateApp(
   return { app, router };
 }
 
-export function createTemplateRouter(
+export function createNanaBoboRouter(
   history?: RouterHistory,
-  preset: TemplateUIPresetAdapter = activeUIPreset,
+  preset: NanaBoboUIPresetAdapter = activeUIPreset,
 ) {
   return createRouter({
     history: history ?? createWebHistory(),

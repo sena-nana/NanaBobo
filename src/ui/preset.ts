@@ -5,5 +5,5 @@ export const appUIPresetId = "lilia" as const;
 export const appUIDefaultDensity = "compact" as const;
 // @lilia/ui-preset:end
 
-export { templatePreset as activeUIPreset } from "./activePreset";
-export type { TemplateAppCapability, TemplateUIPresetAdapter } from "./types";
+export { nanaBoboPreset as activeUIPreset } from "./activePreset";
+export type { NanaBoboAppCapability, NanaBoboUIPresetAdapter } from "./types";

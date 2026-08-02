@@ -1,0 +1,4 @@
+interface:
+  display_name: "NanaBobo Development"
+  short_description: "B站直播工具箱开发与安全规范"
+  default_prompt: "Use $nanabobo-development to implement a NanaBobo feature safely."

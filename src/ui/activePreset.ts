@@ -8,7 +8,7 @@ import OverlayHost from "@lilia/ui/components/OverlayHost";
 import appConfigJson from "../../app.config.json";
 import { defineComponent, h, type Component } from "vue";
 import type { AppUIPresetAdapter } from "./contract";
-import type { TemplateUIPresetAdapter } from "./types";
+import type { NanaBoboUIPresetAdapter } from "./types";
 import ActiveShell from "./ActiveShell.vue";
 
 const upstream = liliaPresetDefinition as AppUIPresetAdapter<Component>;
@@ -25,7 +25,7 @@ const settings = createSettingsModel({
   },
 });
 
-export const templatePreset: TemplateUIPresetAdapter = {
+export const nanaBoboPreset: NanaBoboUIPresetAdapter = {
   ...upstream,
   shell: ActiveShell,
   routes: [

@@ -2,7 +2,7 @@ import type { Plugin, Rollup } from "vite";
 
 export function uiBundleGuard(expected: "lilia" | "nana"): Plugin {
   return {
-    name: "template-ui-bundle-guard",
+    name: "nanabobo-ui-bundle-guard",
     generateBundle(_options, bundle) {
       const chunks = Object.values(bundle).filter((entry): entry is Rollup.OutputChunk => entry.type === "chunk");
       const assets = Object.values(bundle).filter((entry): entry is Rollup.OutputAsset => entry.type === "asset");

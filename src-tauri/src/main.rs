@@ -1,3 +1,3 @@
 fn main() {
-    tauri_template_lib::run()
+    nanabobo_lib::run()
 }

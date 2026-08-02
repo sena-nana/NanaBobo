@@ -1,4 +1,4 @@
 import "./ui/styles.css";
-import { createTemplateApp } from "./app";
+import { createNanaBoboApp } from "./app";
 
-createTemplateApp().app.mount("#root");
+createNanaBoboApp().app.mount("#root");

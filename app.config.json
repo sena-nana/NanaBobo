@@ -1,15 +1,12 @@
 {
-  "appName": "tauri-template",
-  "productTitle": "Tauri Template",
+  "appName": "nanabobo",
+  "productTitle": "Nana播播工具箱",
   "version": "0.1.0",
-  "identifier": "com.tauritemplate.desktop",
-  "storageKeyPrefix": "tauri-template",
+  "identifier": "com.senanana.nanabobo",
+  "storageKeyPrefix": "nanabobo",
   "ui": {
     "preset": "lilia",
     "density": "compact",
     "accent": "blue"
-  },
-  "onboarding": {
-    "enabled": true
   }
 }
