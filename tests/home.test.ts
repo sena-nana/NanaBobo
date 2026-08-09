@@ -108,6 +108,7 @@ describe("首页直播间工作流", () => {
     await screen.findByText("Nana");
     const avatar = screen.getByRole("img", { name: "" });
     expect(avatar.getAttribute("src")).toBe(room.owner_avatar_url);
+    expect(avatar.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(mocks.api.getRoomInfo).toHaveBeenCalledWith("123");
     expect(screen.getByRole("img", { name: "直播间在线人数和关注数趋势图" })).toBeVisible();
     expect(screen.getAllByText("42").length).toBeGreaterThan(0);

@@ -39,6 +39,7 @@ function submitQuery() {
         class="owner-avatar"
         :src="info.owner_avatar_url"
         alt=""
+        referrerpolicy="no-referrer"
       >
       <span v-else class="owner-avatar nana-avatar-fallback nana-room-fallback" aria-hidden="true">{{ ownerInitial }}</span>
       <strong class="owner-name">{{ ownerName }}</strong>

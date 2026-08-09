@@ -37,6 +37,7 @@ const qrHint = computed(() => {
         class="account-avatar"
         :src="status.account.avatar_url"
         alt=""
+        referrerpolicy="no-referrer"
       >
       <span v-else class="account-avatar nana-avatar-fallback nana-account-fallback" aria-hidden="true">{{ accountInitial }}</span>
       <div class="account-copy">
