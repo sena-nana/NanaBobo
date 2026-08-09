@@ -72,16 +72,23 @@ function renderHome() {
   });
 }
 
+function expectHomeSummaryRemoved(container: HTMLElement) {
+  expect(container.querySelector('[data-agent-id="home.summary"]')).toBeNull();
+  expect(screen.queryByText("最近流水")).toBeNull();
+  expect(screen.queryByText("当前关注数")).toBeNull();
+}
+
 describe("首页直播间工作流", () => {
   it("未登录时只显示登录入口，不显示房间输入", async () => {
     mocks.api.getStatus.mockResolvedValue({ authenticated: false, account: null });
-    renderHome();
+    const { container } = renderHome();
 
     await screen.findByRole("heading", { name: "登录后连接直播间" });
     expect(screen.queryByRole("textbox", { name: "直播间号" })).toBeNull();
     expect(screen.getByRole("img", { name: "直播间在线人数和关注数趋势图" })).toBeVisible();
     expect(screen.getByText("连接直播间后开始记录数据")).toBeVisible();
-    expect(screen.getAllByText("暂无")).toHaveLength(2);
+    expectHomeSummaryRemoved(container);
+    expect(container.querySelector('[data-agent-id="home.trend-card"]')).not.toBeNull();
     expect(screen.queryByText("数据趋势")).toBeNull();
     expect(screen.queryByText("直播间", { exact: true })).toBeNull();
     expect(screen.queryByText("接收当前直播间的实时弹幕")).toBeNull();
@@ -103,7 +110,7 @@ describe("首页直播间工作流", () => {
 
   it("恢复保存的房间并显示主播头像，切换时清除保存状态", async () => {
     localStorage.setItem("nanabobo.live.room-id", "123");
-    renderHome();
+    const { container } = renderHome();
 
     await screen.findByText("Nana");
     const avatar = screen.getByRole("img", { name: "" });
@@ -112,8 +119,7 @@ describe("首页直播间工作流", () => {
     expect(mocks.api.getRoomInfo).toHaveBeenCalledWith("123");
     expect(screen.getByRole("img", { name: "直播间在线人数和关注数趋势图" })).toBeVisible();
     expect(screen.getAllByText("42").length).toBeGreaterThan(0);
-    expect(screen.getByText("最近流水")).toBeVisible();
-    expect(screen.getByText("当前关注数")).toBeVisible();
+    expectHomeSummaryRemoved(container);
     expect(screen.queryByText("直播测试")).toBeNull();
     expect(screen.queryByText("直播状态")).toBeNull();
 

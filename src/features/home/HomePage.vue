@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from "vue";
 import { RouterLink } from "vue-router";
+import { Card } from "../../ui";
 import AccountPanel from "../account/AccountPanel.vue";
 import RoomInfoPanel from "../live/RoomInfoPanel.vue";
 import { useNanaSession } from "../session/useNanaSession";
@@ -8,7 +8,6 @@ import LiveTrendChart from "../stats/LiveTrendChart.vue";
 
 const session = useNanaSession();
 const { account, room, stats, authenticated } = session;
-const current = computed(() => stats.current.value[stats.current.value.length - 1] ?? room.info.value);
 </script>
 
 <template>
@@ -19,17 +18,9 @@ const current = computed(() => stats.current.value[stats.current.value.length - 
         <AccountPanel v-if="!authenticated" :session="account" />
         <RoomInfoPanel v-else :session="room" @disconnect="session.disconnectRoom" />
       </div>
-      <LiveTrendChart :snapshots="stats.current.value" :current-room="room.info.value" />
-      <aside class="home-summary" data-agent-id="home.summary">
-        <div>
-          <span>最近流水</span>
-          <strong>{{ current?.viewer_count?.toLocaleString() ?? "暂无" }}</strong>
-        </div>
-        <div>
-          <span>当前关注数</span>
-          <strong>{{ current?.follower_count?.toLocaleString() ?? "暂无" }}</strong>
-        </div>
-      </aside>
+      <Card class="home-trend-card" data-agent-id="home.trend-card">
+        <LiveTrendChart :snapshots="stats.current.value" :current-room="room.info.value" />
+      </Card>
     </div>
 
     <section class="home-tools" data-agent-id="home.tools">
@@ -54,17 +45,16 @@ const current = computed(() => stats.current.value[stats.current.value.length - 
 <style scoped>
 .home-page { display: grid; min-height: 100%; grid-template-rows: minmax(0, 1fr) auto; gap: 14px; }
 .home-header-marker { display: none; }
-.home-dashboard { display: grid; min-height: 0; grid-template-columns: minmax(230px, 270px) minmax(360px, 1fr) minmax(150px, 190px); gap: clamp(18px, 3vw, 34px); align-items: center; padding: 32px 0 48px; }
-.home-room :deep(.room-panel) { height: auto; min-height: 0; padding: 12px 0 0; border: 0; background: transparent; box-shadow: none; }
-.home-room { text-align: center; }
-.home-room :deep(.account-card) { width: 100%; min-height: 0; padding: 16px; text-align: center; }
+.home-dashboard { display: grid; min-height: 0; grid-template-columns: minmax(230px, 270px) minmax(360px, 1fr); grid-auto-rows: minmax(330px, 1fr); gap: clamp(18px, 3vw, 34px); align-items: stretch; padding: 32px 0 48px; }
+.home-room { min-width: 0; text-align: center; }
+.home-room :deep(.ui-card), .home-trend-card { min-height: 330px; margin-bottom: 0; border: 1px solid var(--border); background: var(--bg-elev); }
+.home-room :deep(.ui-card) { width: 100%; height: 100%; }
+.home-room :deep(.account-card) { display: grid; align-content: center; padding: 16px; text-align: center; }
 .home-room :deep(.card-heading) { justify-content: center; flex-direction: column; margin-bottom: 12px; }
 .home-room :deep(.login-block), .home-room :deep(.state-block), .home-room :deep(.qr-block) { justify-items: center; min-height: 0; text-align: center; }
 .home-room :deep(.account-row) { min-height: 0; }
-.home-summary { display: grid; align-content: start; justify-items: center; gap: 28px; padding-top: 18px; text-align: center; }
-.home-summary div { display: grid; gap: 6px; }
-.home-summary span { color: var(--text); font-size: 13px; font-weight: 600; }
-.home-summary strong { color: var(--text); font-size: 24px; font-weight: 700; line-height: 1.1; }
+.home-trend-card { display: grid; min-width: 0; place-items: center; }
+.home-trend-card :deep(.trend-chart) { width: 100%; }
 .home-tools { min-height: 150px; padding: 14px 0 0; border-top: 1px solid var(--border-soft); }
 .tools-heading { display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 14px; text-align: center; }
 .tools-heading h2 { margin: 0; font-size: 18px; font-weight: 600; }
@@ -77,14 +67,11 @@ const current = computed(() => stats.current.value[stats.current.value.length - 
 .tool-copy strong { font-size: 14px; }
 .tool-arrow { color: var(--text-faint); font-size: 18px; }
 :global(.nana-avatar-fallback) { display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); font-size: 24px; font-weight: 700; }
-@media (max-width: 900px) {
-  .home-dashboard { grid-template-columns: minmax(230px, 270px) minmax(0, 1fr); }
-  .home-summary { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding-top: 0; }
-}
 @media (max-width: 760px) {
-  .home-page { gap: 12px; }
-  .home-dashboard { grid-template-columns: 1fr; gap: 16px; padding: 24px 0 32px; }
-  .home-summary { grid-column: auto; }
+  .home-page { grid-template-rows: auto auto; gap: 12px; }
+  .home-dashboard { grid-template-columns: 1fr; grid-auto-rows: auto; gap: 16px; align-items: start; padding: 24px 0 32px; }
+  .home-room :deep(.ui-card) { height: auto; }
+  .home-room :deep(.ui-card), .home-trend-card { min-height: 0; }
   .home-tools { padding: 12px 0 0; }
 }
 </style>
