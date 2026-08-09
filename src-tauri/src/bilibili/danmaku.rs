@@ -1,7 +1,7 @@
 use std::{
     io::Read,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use brotli::Decompressor;
@@ -26,6 +26,29 @@ const PROTO_RAW: u16 = 0;
 const PROTO_HEARTBEAT: u16 = 1;
 const PROTO_ZLIB: u16 = 2;
 const PROTO_BROTLI: u16 = 3;
+
+const DANMAKU_PARSE_LIMITS: ParseLimits = ParseLimits {
+    max_input_bytes: 1024 * 1024,
+    max_expanded_bytes_per_frame: 2 * 1024 * 1024,
+    max_total_expanded_bytes: 4 * 1024 * 1024,
+    max_nested_depth: 4,
+    max_frames: 1024,
+    max_messages: 256,
+    max_sender_name_bytes: 256,
+    max_message_text_bytes: 4 * 1024,
+};
+
+#[derive(Clone, Copy)]
+struct ParseLimits {
+    max_input_bytes: usize,
+    max_expanded_bytes_per_frame: usize,
+    max_total_expanded_bytes: usize,
+    max_nested_depth: usize,
+    max_frames: usize,
+    max_messages: usize,
+    max_sender_name_bytes: usize,
+    max_message_text_bytes: usize,
+}
 
 pub struct DanmakuManager {
     active: Mutex<Option<ActiveConnection>>,
@@ -257,26 +280,40 @@ async fn run_connection(
             }
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Binary(payload))) => {
-                    for parsed in parse_frames(payload.as_ref()).map_err(|_| ())? {
-                        let message = DanmakuMessage {
-                            connection_id: connection.connection_id.clone(),
-                            room_id: connection.room_id,
-                            sender_name: parsed.sender_name,
-                            text: parsed.text,
-                            sent_at: now_seconds(),
-                        };
-                        let _ = app.emit(DANMAKU_MESSAGE_EVENT, message);
+                    match parse_frames(payload.as_ref()) {
+                        Ok(messages) => {
+                            for parsed in messages {
+                                let message = DanmakuMessage {
+                                    connection_id: connection.connection_id.clone(),
+                                    room_id: connection.room_id,
+                                    sender_name: parsed.sender_name,
+                                    text: parsed.text,
+                                    sent_at: now_seconds(),
+                                };
+                                let _ = app.emit(DANMAKU_MESSAGE_EVENT, message);
+                            }
+                        }
+                        Err(error) => {
+                            report_parse_rejection(&error);
+                            if !error.is_budget_exceeded() {
+                                return Err(());
+                            }
+                        }
                     }
                 }
                 Some(Ok(Message::Text(payload))) => {
-                    if let Some(parsed) = parse_chat_json(payload.as_bytes()) {
-                        let _ = app.emit(DANMAKU_MESSAGE_EVENT, DanmakuMessage {
-                            connection_id: connection.connection_id.clone(),
-                            room_id: connection.room_id,
-                            sender_name: parsed.sender_name,
-                            text: parsed.text,
-                            sent_at: now_seconds(),
-                        });
+                    match parse_text_message(payload.as_bytes()) {
+                        Ok(Some(parsed)) => {
+                            let _ = app.emit(DANMAKU_MESSAGE_EVENT, DanmakuMessage {
+                                connection_id: connection.connection_id.clone(),
+                                room_id: connection.room_id,
+                                sender_name: parsed.sender_name,
+                                text: parsed.text,
+                                sent_at: now_seconds(),
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => report_parse_rejection(&error),
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => return Err(()),
@@ -293,36 +330,180 @@ struct ParsedMessage {
     text: String,
 }
 
-fn parse_frames(mut bytes: &[u8]) -> Result<Vec<ParsedMessage>, ()> {
-    let mut messages = Vec::new();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BudgetLimit {
+    InputBytes,
+    ExpandedFrameBytes,
+    ExpandedTotalBytes,
+    NestedDepth,
+    Frames,
+    Messages,
+    SenderNameBytes,
+    MessageTextBytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseFailure {
+    Budget(BudgetLimit),
+    InvalidFrame,
+    Decompression,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParseStats {
+    input_bytes: usize,
+    expanded_bytes: usize,
+    max_depth: usize,
+    frames: usize,
+    messages: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParseError {
+    failure: ParseFailure,
+    stats: ParseStats,
+    elapsed: Duration,
+}
+
+impl ParseError {
+    fn is_budget_exceeded(&self) -> bool {
+        matches!(self.failure, ParseFailure::Budget(_))
+    }
+}
+
+struct ParseBudget {
+    limits: ParseLimits,
+    stats: ParseStats,
+}
+
+impl ParseBudget {
+    fn record_depth(&mut self, depth: usize) -> Result<(), ParseFailure> {
+        self.stats.max_depth = self.stats.max_depth.max(depth);
+        if depth > self.limits.max_nested_depth {
+            return Err(ParseFailure::Budget(BudgetLimit::NestedDepth));
+        }
+        Ok(())
+    }
+
+    fn record_frame(&mut self) -> Result<(), ParseFailure> {
+        self.stats.frames = self.stats.frames.saturating_add(1);
+        if self.stats.frames > self.limits.max_frames {
+            return Err(ParseFailure::Budget(BudgetLimit::Frames));
+        }
+        Ok(())
+    }
+
+    fn record_message(&mut self) -> Result<(), ParseFailure> {
+        self.stats.messages = self.stats.messages.saturating_add(1);
+        if self.stats.messages > self.limits.max_messages {
+            return Err(ParseFailure::Budget(BudgetLimit::Messages));
+        }
+        Ok(())
+    }
+}
+
+fn parse_frames(bytes: &[u8]) -> Result<Vec<ParsedMessage>, ParseError> {
+    parse_frames_with_limits(bytes, DANMAKU_PARSE_LIMITS)
+}
+
+fn parse_frames_with_limits(
+    bytes: &[u8],
+    limits: ParseLimits,
+) -> Result<Vec<ParsedMessage>, ParseError> {
+    parse_with_budget(bytes, limits, |budget| {
+        let mut messages = Vec::new();
+        parse_frames_inner(bytes, 0, budget, &mut messages)?;
+        Ok(messages)
+    })
+}
+
+fn parse_text_message(bytes: &[u8]) -> Result<Option<ParsedMessage>, ParseError> {
+    parse_with_budget(bytes, DANMAKU_PARSE_LIMITS, |budget| {
+        parse_chat_json(bytes, budget)
+    })
+}
+
+fn parse_with_budget<T>(
+    bytes: &[u8],
+    limits: ParseLimits,
+    parse: impl FnOnce(&mut ParseBudget) -> Result<T, ParseFailure>,
+) -> Result<T, ParseError> {
+    let started = Instant::now();
+    let mut budget = ParseBudget {
+        limits,
+        stats: ParseStats {
+            input_bytes: bytes.len(),
+            expanded_bytes: 0,
+            max_depth: 0,
+            frames: 0,
+            messages: 0,
+        },
+    };
+    if bytes.len() > limits.max_input_bytes {
+        return Err(ParseError {
+            failure: ParseFailure::Budget(BudgetLimit::InputBytes),
+            stats: budget.stats,
+            elapsed: started.elapsed(),
+        });
+    }
+    parse(&mut budget).map_err(|failure| ParseError {
+        failure,
+        stats: budget.stats,
+        elapsed: started.elapsed(),
+    })
+}
+
+fn parse_frames_inner(
+    mut bytes: &[u8],
+    depth: usize,
+    budget: &mut ParseBudget,
+    messages: &mut Vec<ParsedMessage>,
+) -> Result<(), ParseFailure> {
     while !bytes.is_empty() {
         if bytes.len() < HEADER_SIZE {
-            return Err(());
+            return Err(ParseFailure::InvalidFrame);
         }
-        let packet_size = u32::from_be_bytes(bytes[0..4].try_into().map_err(|_| ())?) as usize;
-        let header_size = u16::from_be_bytes(bytes[4..6].try_into().map_err(|_| ())?) as usize;
-        let protocol = u16::from_be_bytes(bytes[6..8].try_into().map_err(|_| ())?);
-        let operation = u32::from_be_bytes(bytes[8..12].try_into().map_err(|_| ())?);
+        let packet_size = u32::from_be_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| ParseFailure::InvalidFrame)?,
+        ) as usize;
+        let header_size = u16::from_be_bytes(
+            bytes[4..6]
+                .try_into()
+                .map_err(|_| ParseFailure::InvalidFrame)?,
+        ) as usize;
+        let protocol = u16::from_be_bytes(
+            bytes[6..8]
+                .try_into()
+                .map_err(|_| ParseFailure::InvalidFrame)?,
+        );
+        let operation = u32::from_be_bytes(
+            bytes[8..12]
+                .try_into()
+                .map_err(|_| ParseFailure::InvalidFrame)?,
+        );
         if packet_size < header_size || header_size < HEADER_SIZE || packet_size > bytes.len() {
-            return Err(());
+            return Err(ParseFailure::InvalidFrame);
         }
+        budget.record_frame()?;
         let body = &bytes[header_size..packet_size];
         if operation == OP_MESSAGE {
             match protocol {
                 PROTO_ZLIB => {
-                    let mut decoder = ZlibDecoder::new(body);
-                    let mut decoded = Vec::new();
-                    decoder.read_to_end(&mut decoded).map_err(|_| ())?;
-                    messages.extend(parse_frames(&decoded)?);
+                    let next_depth = depth.saturating_add(1);
+                    budget.record_depth(next_depth)?;
+                    let decoded = read_compressed(ZlibDecoder::new(body), budget)?;
+                    parse_frames_inner(&decoded, next_depth, budget, messages)?;
                 }
                 PROTO_BROTLI => {
-                    let mut decoder = Decompressor::new(body, 4096);
-                    let mut decoded = Vec::new();
-                    decoder.read_to_end(&mut decoded).map_err(|_| ())?;
-                    messages.extend(parse_frames(&decoded)?);
+                    let next_depth = depth.saturating_add(1);
+                    budget.record_depth(next_depth)?;
+                    let decoded = read_compressed(Decompressor::new(body, 4096), budget)?;
+                    parse_frames_inner(&decoded, next_depth, budget, messages)?;
                 }
                 PROTO_RAW | PROTO_HEARTBEAT => {
-                    if let Some(message) = parse_chat_json(body) {
+                    if let Some(message) = parse_chat_json(body, budget)? {
                         messages.push(message);
                     }
                 }
@@ -331,24 +512,85 @@ fn parse_frames(mut bytes: &[u8]) -> Result<Vec<ParsedMessage>, ()> {
         }
         bytes = &bytes[packet_size..];
     }
-    Ok(messages)
+    Ok(())
 }
 
-fn parse_chat_json(bytes: &[u8]) -> Option<ParsedMessage> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    if value.get("cmd")?.as_str()? != "DANMU_MSG" {
-        return None;
+fn read_compressed<R: Read>(reader: R, budget: &mut ParseBudget) -> Result<Vec<u8>, ParseFailure> {
+    let frame_remaining = budget.limits.max_expanded_bytes_per_frame;
+    let total_remaining = budget
+        .limits
+        .max_total_expanded_bytes
+        .saturating_sub(budget.stats.expanded_bytes);
+    let limit = frame_remaining.min(total_remaining);
+    let mut decoded = Vec::new();
+    reader
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut decoded)
+        .map_err(|_| ParseFailure::Decompression)?;
+    if decoded.len() > frame_remaining {
+        return Err(ParseFailure::Budget(BudgetLimit::ExpandedFrameBytes));
     }
-    let info = value.get("info")?.as_array()?;
-    let text = info.get(1)?.as_str()?.trim();
-    let sender_name = info.get(2)?.get(1)?.as_str()?.trim();
+    if decoded.len() > total_remaining {
+        return Err(ParseFailure::Budget(BudgetLimit::ExpandedTotalBytes));
+    }
+    budget.stats.expanded_bytes += decoded.len();
+    Ok(decoded)
+}
+
+fn parse_chat_json(
+    bytes: &[u8],
+    budget: &mut ParseBudget,
+) -> Result<Option<ParsedMessage>, ParseFailure> {
+    let Some(value) = serde_json::from_slice::<Value>(bytes).ok() else {
+        return Ok(None);
+    };
+    let Some(command) = value.get("cmd").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if command != "DANMU_MSG" {
+        return Ok(None);
+    }
+    let Some(info) = value.get("info").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let Some(text) = info.get(1).and_then(Value::as_str).map(str::trim) else {
+        return Ok(None);
+    };
+    let Some(sender_name) = info
+        .get(2)
+        .and_then(|sender| sender.get(1))
+        .and_then(Value::as_str)
+        .map(str::trim)
+    else {
+        return Ok(None);
+    };
     if text.is_empty() || sender_name.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(ParsedMessage {
+    if sender_name.len() > budget.limits.max_sender_name_bytes {
+        return Err(ParseFailure::Budget(BudgetLimit::SenderNameBytes));
+    }
+    if text.len() > budget.limits.max_message_text_bytes {
+        return Err(ParseFailure::Budget(BudgetLimit::MessageTextBytes));
+    }
+    budget.record_message()?;
+    Ok(Some(ParsedMessage {
         sender_name: sender_name.to_owned(),
         text: text.to_owned(),
-    })
+    }))
+}
+
+fn report_parse_rejection(error: &ParseError) {
+    eprintln!(
+        "danmaku packet rejected: reason={:?} input_bytes={} expanded_bytes={} max_depth={} frames={} messages={} elapsed_us={}",
+        error.failure,
+        error.stats.input_bytes,
+        error.stats.expanded_bytes,
+        error.stats.max_depth,
+        error.stats.frames,
+        error.stats.messages,
+        error.elapsed.as_micros(),
+    );
 }
 
 fn build_packet(operation: u32, protocol: u16, body: &[u8]) -> Vec<u8> {
@@ -376,47 +618,217 @@ mod tests {
     use brotli::CompressorWriter;
     use flate2::{write::ZlibEncoder, Compression};
 
-    use super::{build_packet, parse_frames, OP_MESSAGE, PROTO_RAW, PROTO_ZLIB};
+    use super::{
+        build_packet, parse_frames, parse_frames_with_limits, parse_text_message, BudgetLimit,
+        ParseFailure, ParseLimits, OP_MESSAGE, PROTO_BROTLI, PROTO_HEARTBEAT, PROTO_RAW,
+        PROTO_ZLIB,
+    };
 
-    fn chat_packet() -> Vec<u8> {
-        build_packet(
-            OP_MESSAGE,
-            PROTO_RAW,
-            br#"{"cmd":"DANMU_MSG","info":[null,"\u4f60\u597d",[123,"\u89c2\u4f17"]]}"#,
-        )
+    fn test_limits() -> ParseLimits {
+        ParseLimits {
+            max_input_bytes: 256 * 1024,
+            max_expanded_bytes_per_frame: 64 * 1024,
+            max_total_expanded_bytes: 128 * 1024,
+            max_nested_depth: 4,
+            max_frames: 128,
+            max_messages: 64,
+            max_sender_name_bytes: 64,
+            max_message_text_bytes: 256,
+        }
     }
 
-    #[test]
-    fn parses_public_chat_messages_without_exposing_raw_payload() {
-        let messages = parse_frames(&chat_packet()).unwrap();
-        assert_eq!(messages[0].sender_name, "观众");
-        assert_eq!(messages[0].text, "你好");
+    fn chat_json(sender_name: &str, text: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "cmd": "DANMU_MSG",
+            "info": [null, text, [123, sender_name]],
+        }))
+        .unwrap()
     }
 
-    #[test]
-    fn parses_zlib_wrapped_frames() {
+    fn chat_packet(sender_name: &str, text: &str) -> Vec<u8> {
+        build_packet(OP_MESSAGE, PROTO_RAW, &chat_json(sender_name, text))
+    }
+
+    fn zlib_packet(inner: &[u8]) -> Vec<u8> {
         let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&chat_packet()).unwrap();
-        let packet = build_packet(OP_MESSAGE, PROTO_ZLIB, &encoder.finish().unwrap());
-        let messages = parse_frames(&packet).unwrap();
-        assert_eq!(messages[0].text, "你好");
+        encoder.write_all(inner).unwrap();
+        build_packet(OP_MESSAGE, PROTO_ZLIB, &encoder.finish().unwrap())
     }
 
-    #[test]
-    fn parses_brotli_wrapped_frames() {
+    fn brotli_packet(inner: &[u8]) -> Vec<u8> {
         let mut encoded = Vec::new();
         {
             let mut writer = CompressorWriter::new(&mut encoded, 4096, 5, 22);
-            writer.write_all(&chat_packet()).unwrap();
-            writer.flush().unwrap();
+            writer.write_all(inner).unwrap();
         }
-        let packet = super::build_packet(OP_MESSAGE, super::PROTO_BROTLI, &encoded);
-        let messages = parse_frames(&packet).unwrap();
-        assert_eq!(messages[0].sender_name, "观众");
+        build_packet(OP_MESSAGE, PROTO_BROTLI, &encoded)
+    }
+
+    fn ignored_frame(body_bytes: usize) -> Vec<u8> {
+        build_packet(0, PROTO_RAW, &vec![0; body_bytes])
     }
 
     #[test]
-    fn rejects_truncated_frames() {
-        assert!(parse_frames(&[0, 1, 2]).is_err());
+    fn preserves_normal_raw_compressed_text_and_heartbeat_messages() {
+        let chat = chat_packet("观众", "你好");
+        let mut heartbeat_then_chat = build_packet(3, PROTO_HEARTBEAT, &42u32.to_be_bytes());
+        heartbeat_then_chat.extend_from_slice(&chat);
+
+        for packet in [
+            chat.clone(),
+            zlib_packet(&chat),
+            brotli_packet(&chat),
+            heartbeat_then_chat,
+        ] {
+            let messages = parse_frames(&packet).unwrap();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].sender_name, "观众");
+            assert_eq!(messages[0].text, "你好");
+        }
+        assert_eq!(
+            parse_text_message(&chat_json("观众", "你好"))
+                .unwrap()
+                .unwrap()
+                .text,
+            "你好"
+        );
+    }
+
+    #[test]
+    fn distinguishes_invalid_frames_from_budget_rejections() {
+        let invalid = parse_frames(&[0, 1, 2]).unwrap_err();
+        assert_eq!(invalid.failure, ParseFailure::InvalidFrame);
+        assert!(!invalid.is_budget_exceeded());
+
+        let packet = chat_packet("观众", "你好");
+        let mut limits = test_limits();
+        limits.max_input_bytes = packet.len() - 1;
+        let error = parse_frames_with_limits(&packet, limits).unwrap_err();
+
+        assert_eq!(error.failure, ParseFailure::Budget(BudgetLimit::InputBytes));
+        assert_eq!(error.stats.frames, 0);
+        assert!(error.is_budget_exceeded());
+    }
+
+    #[test]
+    fn enforces_nested_depth_across_zlib_and_brotli() {
+        let chat = chat_packet("观众", "你好");
+        let depth_two = brotli_packet(&zlib_packet(&chat));
+        let mut limits = test_limits();
+        limits.max_nested_depth = 2;
+        assert_eq!(
+            parse_frames_with_limits(&depth_two, limits).unwrap().len(),
+            1
+        );
+
+        let depth_three = zlib_packet(&depth_two);
+        let error = parse_frames_with_limits(&depth_three, limits).unwrap_err();
+
+        assert_eq!(
+            error.failure,
+            ParseFailure::Budget(BudgetLimit::NestedDepth)
+        );
+    }
+
+    #[test]
+    fn shares_total_expansion_budget_across_sibling_frames() {
+        let compressed = zlib_packet(&ignored_frame(700));
+        let mut packet = compressed.clone();
+        packet.extend_from_slice(&compressed);
+        let mut limits = test_limits();
+        limits.max_expanded_bytes_per_frame = 1024;
+        limits.max_total_expanded_bytes = 1000;
+
+        let error = parse_frames_with_limits(&packet, limits).unwrap_err();
+
+        assert_eq!(
+            error.failure,
+            ParseFailure::Budget(BudgetLimit::ExpandedTotalBytes)
+        );
+        assert!(error.stats.expanded_bytes <= limits.max_total_expanded_bytes);
+    }
+
+    #[test]
+    fn stops_zlib_and_brotli_bombs_at_the_streaming_frame_limit() {
+        let expanded = ignored_frame(32 * 1024);
+        let mut limits = test_limits();
+        limits.max_expanded_bytes_per_frame = 1024;
+        limits.max_total_expanded_bytes = 8 * 1024;
+
+        for packet in [zlib_packet(&expanded), brotli_packet(&expanded)] {
+            assert!(packet.len() < expanded.len());
+            let error = parse_frames_with_limits(&packet, limits).unwrap_err();
+            assert_eq!(
+                error.failure,
+                ParseFailure::Budget(BudgetLimit::ExpandedFrameBytes)
+            );
+            assert!(error.stats.expanded_bytes <= limits.max_expanded_bytes_per_frame);
+        }
+    }
+
+    #[test]
+    fn bounds_frame_and_compressed_message_floods() {
+        let frame = build_packet(3, PROTO_HEARTBEAT, &[]);
+        let mut frames = frame.repeat(3);
+        let mut limits = test_limits();
+        limits.max_frames = 3;
+        assert!(parse_frames_with_limits(&frames, limits)
+            .unwrap()
+            .is_empty());
+        frames.extend_from_slice(&frame);
+        assert_eq!(
+            parse_frames_with_limits(&frames, limits)
+                .unwrap_err()
+                .failure,
+            ParseFailure::Budget(BudgetLimit::Frames)
+        );
+
+        let chat = chat_packet("观众", "你好");
+        let mut messages = chat.repeat(3);
+        let mut limits = test_limits();
+        limits.max_messages = 3;
+        assert_eq!(
+            parse_frames_with_limits(&zlib_packet(&messages), limits)
+                .unwrap()
+                .len(),
+            3
+        );
+        messages.extend_from_slice(&chat);
+        assert_eq!(
+            parse_frames_with_limits(&zlib_packet(&messages), limits)
+                .unwrap_err()
+                .failure,
+            ParseFailure::Budget(BudgetLimit::Messages)
+        );
+    }
+
+    #[test]
+    fn enforces_utf8_field_limits_without_exposing_values() {
+        let mut limits = test_limits();
+        limits.max_sender_name_bytes = "观众".len();
+        let rejected_name = "观众甲";
+        let name_error =
+            parse_frames_with_limits(&chat_packet(rejected_name, "你好"), limits).unwrap_err();
+        limits.max_message_text_bytes = "你好".len();
+        let text_error =
+            parse_frames_with_limits(&chat_packet("观众", "你好啊"), limits).unwrap_err();
+
+        assert_eq!(
+            name_error.failure,
+            ParseFailure::Budget(BudgetLimit::SenderNameBytes)
+        );
+        assert_eq!(
+            text_error.failure,
+            ParseFailure::Budget(BudgetLimit::MessageTextBytes)
+        );
+        assert!(!format!("{name_error:?}").contains(rejected_name));
+
+        let long_name = "a".repeat(super::DANMAKU_PARSE_LIMITS.max_sender_name_bytes + 1);
+        assert_eq!(
+            parse_text_message(&chat_json(&long_name, "你好"))
+                .unwrap_err()
+                .failure,
+            ParseFailure::Budget(BudgetLimit::SenderNameBytes)
+        );
     }
 }

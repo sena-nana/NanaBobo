@@ -76,6 +76,10 @@ jobs:
       - name: Verify template
         run: corepack yarn verify
 
+      - name: Test Nana Tauri
+        if: matrix.ui-preset == 'nana' && matrix.ui-source == 'remote'
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Install browser
         if: matrix.ui-preset == 'nana'
         run: corepack yarn playwright install chromium
