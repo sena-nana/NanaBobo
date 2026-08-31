@@ -1,0 +1,7 @@
+# v8 crate 的构建脚本在本机环境无法自动获取预编译库(注册表缓存在 C 盘,
+# 跨盘符号链接需要开发者模式;脚本内嵌下载器在此环境不可用)。
+# 库已手动下载并解压到 target/<profile>/gn_out/obj/rusty_v8.lib,
+# 此处跳过下载直接链接;release 构建前需将同一份库复制到
+# target/release/gn_out/obj/。
+[env]
+RUSTY_V8_SKIP_DOWNLOAD = "1"

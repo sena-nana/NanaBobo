@@ -1890,6 +1890,18 @@ dependencies = [
 name = "nanabobo"
 version = "0.1.0"
 dependencies = [
+ "nanabobo-core",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-lilia",
+ "tauri-plugin-store",
+]
+
+[[package]]
+name = "nanabobo-core"
+version = "0.1.0"
+dependencies = [
  "brotli",
  "flate2",
  "futures-util",
@@ -1898,10 +1910,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-lilia",
- "tauri-plugin-store",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",

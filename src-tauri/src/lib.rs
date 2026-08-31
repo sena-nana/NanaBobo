@@ -1,20 +1,41 @@
-mod bilibili;
 mod commands;
-mod credential_store;
-mod models;
 
 use std::sync::Arc;
 
+use nanabobo_core::bilibili::BilibiliClient;
+use nanabobo_core::commands::AppState;
+use nanabobo_core::credential_store::KeyringCredentialStore;
+use nanabobo_core::events::EventSink;
+use tauri::{Emitter, Manager};
+
+/// 把核心层事件转成 Tauri 前端事件;事件名沿用 `nanabobo://` 约定。
+struct TauriEventSink(tauri::AppHandle);
+
+impl EventSink for TauriEventSink {
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        let _ = self.0.emit(event, payload);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let client = bilibili::BilibiliClient::new().expect("failed to initialize HTTP client");
-    let credentials = Arc::new(credential_store::KeyringCredentialStore::new(
+    let client = BilibiliClient::new().expect("failed to initialize HTTP client");
+    let credentials = Arc::new(KeyringCredentialStore::new(
         "com.senanana.nanabobo",
     ));
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_lilia::init())
-        .manage(commands::AppState::new(client, credentials))
+        .setup(move |app| {
+            let sink: Arc<dyn EventSink> = Arc::new(TauriEventSink(app.handle().clone()));
+            app.manage(AppState::new(
+                client,
+                credentials,
+                tauri::async_runtime::handle().inner().clone(),
+                sink,
+            ));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::auth_qr_start,
             commands::auth_qr_poll,

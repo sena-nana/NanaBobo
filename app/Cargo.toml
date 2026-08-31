@@ -1,0 +1,33 @@
+[package]
+name = "nanabobo-app"
+version = "0.1.0"
+description = "Nana播播工具箱"
+authors = ["sena-nana"]
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "nanabobo"
+path = "src/main.rs"
+
+[build-dependencies]
+nana-app-icon = { path = "../../.nanaui-pin/crates/nana-app-icon", default-features = false, features = ["embed"] }
+
+[dependencies]
+nanabobo-core = { path = "../crates/nanabobo-core" }
+nana-js-engine = { path = "../../.nanaui-pin/crates/nana-js-engine" }
+nana-js-v8 = { path = "../../.nanaui-pin/crates/nana-js-v8", features = ["engine"] }
+nana-ui = { path = "../../.nanaui-pin/crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls"] }
+nana-ui-platform = { path = "../../.nanaui-pin/crates/nana-ui-platform", default-features = false }
+nana-ui-runtime = { path = "../../.nanaui-pin/crates/nana-ui-runtime" }
+nana-ui-scene = { path = "../../.nanaui-pin/crates/nana-ui-scene" }
+nana-ui-vue = { path = "../../.nanaui-pin/crates/nana-ui-vue", default-features = false, features = ["scene-view", "hosted"] }
+nana-ui-web-api = { path = "../../.nanaui-pin/crates/nana-ui-web-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+pollster = "1"
+wgpu = "30.0.0"

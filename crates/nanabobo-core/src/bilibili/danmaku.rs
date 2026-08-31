@@ -8,12 +8,12 @@ use brotli::Decompressor;
 use flate2::read::ZlibDecoder;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 use super::client::{BilibiliClient, DanmakuConnectionInfo};
+use crate::events::EventSink;
 use crate::models::{DanmakuConnection, DanmakuConnectionState, DanmakuMessage, DanmakuStatus};
 
 pub const DANMAKU_MESSAGE_EVENT: &str = "nanabobo://danmaku/message";
@@ -51,6 +51,8 @@ struct ParseLimits {
 }
 
 pub struct DanmakuManager {
+    runtime: tokio::runtime::Handle,
+    sink: Arc<dyn EventSink>,
     active: Mutex<Option<ActiveConnection>>,
     status: Mutex<DanmakuStatus>,
 }
@@ -58,12 +60,14 @@ pub struct DanmakuManager {
 struct ActiveConnection {
     connection: DanmakuConnection,
     stop: watch::Sender<bool>,
-    task: tauri::async_runtime::JoinHandle<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
-impl Default for DanmakuManager {
-    fn default() -> Self {
+impl DanmakuManager {
+    pub fn new(runtime: tokio::runtime::Handle, sink: Arc<dyn EventSink>) -> Self {
         Self {
+            runtime,
+            sink,
             active: Mutex::new(None),
             status: Mutex::new(DanmakuStatus {
                 connection_id: None,
@@ -73,9 +77,7 @@ impl Default for DanmakuManager {
             }),
         }
     }
-}
 
-impl DanmakuManager {
     pub fn status(&self) -> DanmakuStatus {
         self.status
             .lock()
@@ -90,18 +92,16 @@ impl DanmakuManager {
 
     pub fn start(
         self: &Arc<Self>,
-        app: AppHandle,
         client: BilibiliClient,
         room_id: u64,
     ) -> Result<DanmakuConnection, String> {
-        self.stop(&app, None);
+        self.stop(None);
         let connection = DanmakuConnection {
             connection_id: Uuid::new_v4().to_string(),
             room_id,
         };
         let (stop, stop_rx) = watch::channel(false);
         self.set_status(
-            &app,
             DanmakuStatus {
                 connection_id: Some(connection.connection_id.clone()),
                 room_id: Some(room_id),
@@ -110,10 +110,9 @@ impl DanmakuManager {
             },
         );
         let task_connection = connection.clone();
-        let manager = Arc::clone(self);
-        let task_app = app.clone();
-        let task = tauri::async_runtime::spawn(async move {
-            run_loop(manager, task_app, client, task_connection, stop_rx).await;
+        let sink = Arc::clone(&self.sink);
+        let task = self.runtime.spawn(async move {
+            run_loop(sink, client, task_connection, stop_rx).await;
         });
         self.active
             .lock()
@@ -126,7 +125,7 @@ impl DanmakuManager {
         Ok(connection)
     }
 
-    pub fn stop(&self, app: &AppHandle, connection_id: Option<&str>) -> bool {
+    pub fn stop(&self, connection_id: Option<&str>) -> bool {
         let active = self.active.lock().ok().and_then(|mut active| {
             let matches = active.as_ref().is_some_and(|current| {
                 connection_id.is_none()
@@ -141,29 +140,32 @@ impl DanmakuManager {
         let Some(active) = active else { return false };
         let _ = active.stop.send(true);
         active.task.abort();
-        self.set_status(
-            app,
-            DanmakuStatus {
-                connection_id: None,
-                room_id: None,
-                state: DanmakuConnectionState::Stopped,
-                message: None,
-            },
-        );
+        self.set_status(DanmakuStatus {
+            connection_id: None,
+            room_id: None,
+            state: DanmakuConnectionState::Stopped,
+            message: None,
+        });
         true
     }
 
-    fn set_status(&self, app: &AppHandle, status: DanmakuStatus) {
+    fn set_status(&self, status: DanmakuStatus) {
         if let Ok(mut current) = self.status.lock() {
             *current = status.clone();
         }
-        let _ = app.emit(DANMAKU_STATUS_EVENT, status);
+        self.emit(DANMAKU_STATUS_EVENT, &status);
+    }
+
+    fn emit<E: serde::Serialize>(&self, event: &str, payload: &E) {
+        let Ok(value) = serde_json::to_value(payload) else {
+            return;
+        };
+        self.sink.emit(event, value);
     }
 }
 
 async fn run_loop(
-    manager: Arc<DanmakuManager>,
-    app: AppHandle,
+    sink: Arc<dyn EventSink>,
     client: BilibiliClient,
     connection: DanmakuConnection,
     mut stop: watch::Receiver<bool>,
@@ -174,8 +176,8 @@ async fn run_loop(
             return;
         }
         if retry > 0 {
-            manager.set_status(
-                &app,
+            emit_status(
+                &sink,
                 DanmakuStatus {
                     connection_id: Some(connection.connection_id.clone()),
                     room_id: Some(connection.room_id),
@@ -202,7 +204,7 @@ async fn run_loop(
             let Ok((socket, _)) = connect_async(endpoint).await else {
                 continue;
             };
-            if run_connection(&manager, &app, socket, &connection, &info, &mut stop)
+            if run_connection(&sink, socket, &connection, &info, &mut stop)
                 .await
                 .is_ok()
             {
@@ -228,6 +230,31 @@ async fn run_loop(
     }
 }
 
+fn emit_status(sink: &Arc<dyn EventSink>, status: DanmakuStatus) {
+    let Ok(value) = serde_json::to_value(&status) else {
+        return;
+    };
+    sink.emit(DANMAKU_STATUS_EVENT, value);
+}
+
+fn emit_message(
+    sink: &Arc<dyn EventSink>,
+    connection: &DanmakuConnection,
+    parsed: ParsedMessage,
+) {
+    let message = DanmakuMessage {
+        connection_id: connection.connection_id.clone(),
+        room_id: connection.room_id,
+        sender_name: parsed.sender_name,
+        text: parsed.text,
+        sent_at: now_seconds(),
+    };
+    let Ok(value) = serde_json::to_value(&message) else {
+        return;
+    };
+    sink.emit(DANMAKU_MESSAGE_EVENT, value);
+}
+
 async fn wait_before_retry(stop: &mut watch::Receiver<bool>, retry: usize) -> bool {
     let seconds = [1, 2, 4, 8, 16, 30][retry.saturating_sub(1).min(5)];
     tokio::select! {
@@ -237,14 +264,13 @@ async fn wait_before_retry(stop: &mut watch::Receiver<bool>, retry: usize) -> bo
 }
 
 async fn run_connection(
-    manager: &DanmakuManager,
-    app: &AppHandle,
+    sink: &Arc<dyn EventSink>,
     socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     connection: &DanmakuConnection,
     info: &DanmakuConnectionInfo,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<(), ()> {
-    let (mut sink, mut stream) = socket.split();
+    let (mut sink_io, mut stream) = socket.split();
     let auth_body = serde_json::json!({
         "uid": 0,
         "roomid": connection.room_id,
@@ -254,13 +280,14 @@ async fn run_connection(
         "key": info.token,
     });
     let auth_payload = serde_json::to_vec(&auth_body).map_err(|_| ())?;
-    sink.send(Message::Binary(
-        build_packet(7, PROTO_RAW, &auth_payload).into(),
-    ))
-    .await
-    .map_err(|_| ())?;
-    manager.set_status(
-        app,
+    sink_io
+        .send(Message::Binary(
+            build_packet(7, PROTO_RAW, &auth_payload).into(),
+        ))
+        .await
+        .map_err(|_| ())?;
+    emit_status(
+        sink,
         DanmakuStatus {
             connection_id: Some(connection.connection_id.clone()),
             room_id: Some(connection.room_id),
@@ -276,21 +303,14 @@ async fn run_connection(
                 if changed.is_err() || *stop.borrow() { return Ok(()); }
             }
             _ = heartbeat.tick() => {
-                sink.send(Message::Binary(build_packet(OP_HEARTBEAT, PROTO_HEARTBEAT, &[]).into())).await.map_err(|_| ())?;
+                sink_io.send(Message::Binary(build_packet(OP_HEARTBEAT, PROTO_HEARTBEAT, &[]).into())).await.map_err(|_| ())?;
             }
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Binary(payload))) => {
                     match parse_frames(payload.as_ref()) {
                         Ok(messages) => {
                             for parsed in messages {
-                                let message = DanmakuMessage {
-                                    connection_id: connection.connection_id.clone(),
-                                    room_id: connection.room_id,
-                                    sender_name: parsed.sender_name,
-                                    text: parsed.text,
-                                    sent_at: now_seconds(),
-                                };
-                                let _ = app.emit(DANMAKU_MESSAGE_EVENT, message);
+                                emit_message(sink, &connection, parsed);
                             }
                         }
                         Err(error) => {
@@ -303,15 +323,7 @@ async fn run_connection(
                 }
                 Some(Ok(Message::Text(payload))) => {
                     match parse_text_message(payload.as_bytes()) {
-                        Ok(Some(parsed)) => {
-                            let _ = app.emit(DANMAKU_MESSAGE_EVENT, DanmakuMessage {
-                                connection_id: connection.connection_id.clone(),
-                                room_id: connection.room_id,
-                                sender_name: parsed.sender_name,
-                                text: parsed.text,
-                                sent_at: now_seconds(),
-                            });
-                        }
+                        Ok(Some(parsed)) => emit_message(sink, &connection, parsed),
                         Ok(None) => {}
                         Err(error) => report_parse_rejection(&error),
                     }

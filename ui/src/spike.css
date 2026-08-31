@@ -1,0 +1,49 @@
+/* 应用级全局样式:主题变量与页面通用类(迁移期对齐 Lilia 页面约定)。 */
+
+:root {
+  --spike-accent: oklch(0.62 0.17 255);
+  --spike-surface: oklch(0.98 0.005 260);
+  --spike-surface-elev: oklch(1 0 0);
+  --spike-text: oklch(0.25 0.02 260);
+  --spike-border: oklch(0.9 0.01 260);
+}
+
+:root[data-theme="dark"] {
+  --spike-accent: oklch(0.72 0.15 255);
+  --spike-surface: oklch(0.2 0.02 260);
+  --spike-surface-elev: oklch(0.26 0.02 260);
+  --spike-text: oklch(0.93 0.01 260);
+  --spike-border: oklch(0.35 0.02 260);
+}
+
+body {
+  margin: 0;
+  font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  background: var(--spike-surface);
+  color: var(--spike-text);
+}
+
+.page-header {
+  padding: 24px 24px 16px;
+}
+
+.section-kicker {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--spike-accent);
+}
+
+.page-header h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.page-lede {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.72;
+}

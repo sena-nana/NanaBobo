@@ -86,3 +86,9 @@ tmp/
 temp/
 *.tmp
 *.pid
+
+# 迁移期独立构建目录(target-core 与主 target 规避锁冲突)
+/target-core
+
+# ZCode 会话产物
+.zcode/
