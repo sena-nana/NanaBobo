@@ -1,70 +1,41 @@
 ---
 name: lilia-app-boundary
-description: Ownership rules for deciding whether a final Lilia desktop application change belongs in the app repository or in LiliaUI. Use when Codex touches shell behavior, titlebar, sidebar, settings, menus, theme, global CSS, config sync, build wrappers, default assets, window state, @lilia packages, tauri-plugin-lilia, app routes, commands, business pages, or app-owned Tauri code.
+description: Ownership rules for deciding whether a NanaBobo change belongs in the app/ host crate, crates/nanabobo-core, the src/ui facade, src/features business pages, or the NanaUI upstream (.nanaui-pin snapshot and its upstream repository). Use when Codex touches host API registration, Bilibili adapters, credentials, shell assembly, routing, settings, global CSS, build config, @nanaui packages, or business pages.
 ---
 
 # Lilia App Boundary
 
 ## Decision Rule
 
-Put behavior in the final app only when it is application-specific business logic, application configuration, page routing, command wiring, or an app-owned Tauri boundary.
+Put behavior where its responsibility lives:
 
-Move or implement behavior in LiliaUI when it is reusable shell, UI system, styling, config, tooling, build, template check, default asset, or common Tauri runtime behavior.
+- `app/` (host bin crate): the native NanaUI host only — window setup, V8 runtime bootstrap, `HostApiRegistry` wiring in `app/src/host_api.rs`, storage write-through, and headless acceptance tests. No business logic beyond adapter glue.
+- `crates/nanabobo-core`: all Bilibili third-party adaptation, credential access, business models, commands (`AppState`/`AppError`/error codes), and the `EventSink` event abstraction. Zero UI-framework dependencies.
+- `src/ui` (facade): the stable app-facing UI surface — DOM-backed components, `nanaHost.ts` bridge collation, and `nana-styles.css` global styles. Business features import this facade, never `@nanaui/*` directly.
+- `src/ui/nana/`: shell assembly — `NanaShell.vue`, memory-mode routing, and the settings model.
+- `src/features/**`: business pages, workflows, state, and scoped styles.
+- NanaUI upstream (`.nanaui-pin/` snapshot and its upstream repository): renderer, JS engine, native shell, and component system.
 
-## Final App Owns
+## NanaUI Upstream Rule
 
-- `app.config.json`: app name, product title, version, identifier, storage prefix, and app shell copy.
-- `src/ui/activePreset.ts`: generated app navigation, settings copy, shell props, and capability composition for the selected preset.
-- `src/routes.ts` and the active preset adapter: final app routes and lazy-loaded business pages.
-- `src/commands.ts`: app command registration exposed to LiliaUI runtime.
-- `src/features/**`: app business pages, workflows, state, and scoped styles.
-- `src-tauri/**`: app-specific Rust commands, app-specific state, capabilities, and Tauri configuration.
-- `tests/**`: behavior tests for final app routes, commands, configuration, and business workflows.
-- `src/ui/**`: the stable app-facing facade and generated build-time preset adapter; business features import this facade, never a concrete Layer.
+`.nanaui-pin/` is a build snapshot of the sibling NanaUI workspace referenced by path dependencies; the upstream repository is the NanaUI source repo.
 
-## LiliaUI Owns
-
-- `@lilia/ui`: shared components, desktop shell, titlebar, sidebar, settings page, menus, dialogs, theme, CSS tokens, reset, base controls, page classes, default copy patterns, and global UI behavior.
-- `@lilia/config`: shared TypeScript, Vite, VitePress, and app config synchronization helpers.
-- `@lilia/tools`: default assets, template checks, migrations, and surrounding tools.
-- `@lilia/build`: dev, build, docs, Tauri run, and verify wrappers.
-- `tauri-plugin-lilia`: main-window preparation, window state persistence, and shared Tauri runtime behavior.
-
-Do not edit `node_modules/@lilia/*`. Modify the LiliaUI source repository, validate there, then update the final app dependency or lockfile.
+- Do not edit files under `.nanaui-pin/` to fix app problems.
+- When the defect or missing capability is in the NanaUI runtime, component system, or JS engine, record the upstream issue (file path, observed behavior, repro) and route around it in app code only if unavoidable.
+- Fixes belong in the upstream repository, validated there first, then refreshed into the snapshot by whoever owns it.
 
 ## Common Decisions
 
-- New business page or workflow: implement in the final app under `src/features`, then wire it through the active preset adapter with an async import.
-- New app-specific command: implement in final app frontend and `src-tauri`, then update capabilities and tests.
-- Titlebar, sidebar, shell layout, settings, menu, theme, default resource, config sync, template check, build flow, or window-state change: implement in LiliaUI first.
-- Repeated style or component pattern across final apps: implement in LiliaUI.
-- One-off business visualization or workflow-specific style: keep scoped in the final app component.
-
-## Agent-Friendly Ownership
-
-Use `$lilia-agent-debug` for detailed Agent debugging workflows. Use this section only to decide ownership.
-
-Put reusable Agent-friendly affordances in LiliaUI or its source packages:
-
-- Stable `data-agent-id` on shared shell controls, shared dialogs, common menus, settings, titlebar, sidebar, and reusable LiliaUI components.
-- Shared debug harness, template checks, dev-only instrumentation, screenshot/replay tooling, and agent-debug build wrappers.
-- Common timeline, pending-action, permission, plan, markdown, or process-observation components only when they are generic UI primitives and do not embed Lilia-specific provider protocols.
-- Shared display derivation helpers or contracts when multiple apps need the same event-to-UI mapping.
-
-Keep final-app-specific Agent behavior in the final app:
-
-- Business workflows, app routes, app-owned commands, app-specific Tauri state, and persistence.
-- App-specific `data-agent-id` values for feature controls, rows, records, and actions.
-- App-specific Agent timeline, approval, automation, or runner logic when the app owns the data contract or provider boundary.
-- Feature validation scenarios that exercise real app behavior through the shared agent-debug harness.
-
-If both sides are involved, define the public LiliaUI/component or debug interface first, then wire final-app behavior through that interface. Do not make the final app depend on private Lilia implementation details, provider payloads, or undocumented DOM structure.
-
-Keep Layer selection at build time. Never import both complete Layers into a runtime preset registry.
+- New business page or workflow: implement under `src/features`, wire it in `src/ui/nana/NanaShell.vue` (a permanently mounted page with route-driven visibility) plus the router stub list in `src/main.ts`.
+- New host capability: implement the business logic in `crates/nanabobo-core` commands, register the entry in `app/src/host_api.rs`, and call it from the frontend only through `src/ui/nanaHost.ts`.
+- Cross-page style, token, or shell-level change: `src/ui/nana-styles.css` or the `src/ui` facade; component-system gaps go upstream (record, don't patch the snapshot).
+- One-off business visualization or workflow-specific style: keep scoped in the feature component.
+- Window, runtime, rendering, or engine behavior: NanaUI upstream.
 
 ## Guardrails
 
-- Do not copy Lilia-specific paths, protocols, providers, task timelines, or verification scripts into final apps unless the app truly implements that capability.
-- Do not duplicate shared shell or style code locally to make a quick fix.
-- When unsure, inspect the current app code and LiliaUI package surface before choosing a boundary.
-- If both sides must change, define the interface first, then update LiliaUI and the final app in that order.
+- Bilibili raw responses, request headers, cookies, and tokens stop at the `nanabobo-core` adapter boundary; only mapped contracts in `src/contracts` reach Vue.
+- Credentials reach only the Windows Keyring via `nanabobo-core`'s credential store; never into storage files, logs, or frontend responses.
+- Do not duplicate shell or style code locally to make a quick fix.
+- When unsure, inspect `app/src/host_api.rs`, `crates/nanabobo-core/src/lib.rs`, `src/ui/index.ts`, and `ui/vite.config.ts` before choosing a boundary.
+- If both app and upstream must change, define the interface first, wire app behavior through it, and record the upstream follow-up.

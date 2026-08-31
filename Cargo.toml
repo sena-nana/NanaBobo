@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["app", "crates/nanabobo-core"]
-exclude = ["src-tauri"]
 
 # v8 crate 的 build.rs 在 manifest 目录与 OUT_DIR 跨盘(注册表缓存在 C 盘、
 # 构建产物在 D 盘)时会创建 gn_root 符号链接,而 Windows 创建目录符号链接

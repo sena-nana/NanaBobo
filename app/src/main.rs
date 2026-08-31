@@ -25,7 +25,7 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
         RuntimeWindowSettings::new("Nana播播工具箱")
             .initial_size(1200.0, 800.0)
             .minimum_size(960.0, 600.0)
-            .system_caption(true),
+            .system_caption(false),
     )
 }
 
@@ -183,6 +183,7 @@ impl RuntimeProgram for NanaBoboProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nana_js_engine::HostValue;
     use nana_ui::HostedGpuResources;
     use nana_ui_vue::{VueWindowId, WidgetKind};
     use std::sync::Arc;
@@ -253,12 +254,60 @@ mod tests {
 
         // 主页内容(工具区标题 + 房间连接表单)。会话状态依赖真实凭据与
         // 网络,这里只断言与登录态无关的稳定内容。
-        let ready = wait_for_label(&mut runtime, "实时直播工具");
-        eprintln!("probe_last={}", crate::host_api::probe_last());
-        assert!(ready, "主页工具区未渲染");
+        assert!(
+            wait_for_label(&mut runtime, "实时直播工具"),
+            "主页工具区未渲染"
+        );
         assert!(
             wait_for_label(&mut runtime, "连接直播间"),
             "房间连接面板未渲染"
         );
+    }
+
+    fn navigate_to(runtime: &mut VueHostedRuntime<AppEngine>, path: &str) {
+        let navigate = runtime
+            .engine_mut()
+            .resolve_function("__nanabobo.navigate")
+            .expect("navigate 入口已暴露");
+        runtime
+            .engine_mut()
+            .invoke(navigate, &[HostValue::String(path.into())])
+            .unwrap();
+        runtime.engine_mut().run_microtasks().unwrap();
+        for _ in 0..12 {
+            runtime.pump().unwrap();
+        }
+        eprintln!("nav probe: {}", crate::host_api::probe_last());
+    }
+
+    #[test]
+    fn app_pages_render_via_navigation() {
+        let gpu = gpu();
+        let mut runtime = build_runtime(gpu, 1200, 800, 1.0).unwrap();
+        for _ in 0..24 {
+            runtime.pump().unwrap();
+        }
+
+        for (path, anchor) in [
+            ("/stats", "图例"),
+            ("/settings", "窗口材质"),
+        ] {
+            navigate_to(&mut runtime, path);
+            assert!(
+                wait_for_label(&mut runtime, anchor),
+                "{path} 未渲染「{anchor}」: {labels:?}",
+                labels = snapshot_labels(&mut runtime)
+            );
+        }
+
+        // 快照对部分页面文本提取不稳定,导航状态用探针断言。
+        for path in ["/assistant", "/history"] {
+            navigate_to(&mut runtime, path);
+            let probe = crate::host_api::probe_last();
+            assert!(
+                probe.contains(&format!("nav={path}")),
+                "{path} 导航未生效: {probe:?}"
+            );
+        }
     }
 }

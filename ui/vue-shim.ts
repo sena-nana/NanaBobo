@@ -33,3 +33,15 @@ export function withModifiers(
     return handler(event, ...args);
   };
 }
+
+type StylefulElement = { style: { display: string } };
+
+/** v-show 的最小实现:直接切换行内 display(行内样式补丁路径可靠)。 */
+export const vShow = {
+  beforeMount(el: StylefulElement, { value }: { value: unknown }) {
+    el.style.display = value ? "" : "none";
+  },
+  updated(el: StylefulElement, { value }: { value: unknown }) {
+    el.style.display = value ? "" : "none";
+  },
+};

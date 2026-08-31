@@ -15,19 +15,12 @@
 | 弹幕助手 | 只接收当前房间弹幕，显示连接/重连/停止状态，不提供发送入口 |
 | 房间号为空或非法 | 阻止请求并显示输入错误 |
 | B站接口限流或不可用 | 显示可恢复错误，不泄露上游响应 |
-| 浏览器开发模式 | 不伪造 Tauri 数据，明确提示需使用桌面应用 |
-| 桌面连接失败 | 使用结构化可恢复错误，不泄露 Cookie、Token、上游原始响应或弹幕原文到持久化存储 |
+| 弹幕连接失败或中断 | 使用结构化可恢复错误并支持重连，不泄露 Cookie、Token、上游原始响应，弹幕原文不写入持久化存储 |
 
 ## 检查命令
 
-`yarn agent:debug --json`
+`cargo test`(根 workspace,含 app 宿主无头验收)
 
 `yarn test`
 
-`yarn build`
-
-`cargo check --manifest-path src-tauri/Cargo.toml`
-
-`cargo test --manifest-path src-tauri/Cargo.toml`
-
-`yarn verify`
+`cd ui && npm run build` 后 `cargo build -p nanabobo-app`,手动冒烟 `target/debug/nanabobo.exe`

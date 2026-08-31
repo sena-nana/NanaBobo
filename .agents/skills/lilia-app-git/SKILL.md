@@ -1,6 +1,6 @@
 ---
 name: lilia-app-git
-description: Git workflow for final Lilia desktop application changes. Use when Codex stages, commits, pushes, merges, syncs dependencies, reviews diffs before committing, or needs to preserve user and other-agent changes in a final Lilia app repository.
+description: Git workflow for NanaBobo desktop application changes. Use when Codex stages, commits, pushes, merges, syncs dependencies, reviews diffs before committing, or needs to preserve user and other-agent changes in the NanaBobo repository.
 ---
 
 # Lilia App Git
@@ -10,7 +10,7 @@ description: Git workflow for final Lilia desktop application changes. Use when 
 - Inspect `git status --short`.
 - Use `git diff`, `git diff --numstat`, and `git diff --check` when the change is non-trivial, cross-module, generated, or near user edits.
 - Stage only files that belong to the current task.
-- Do not stage unrelated generated output, caches, build artifacts, local secrets, or user work.
+- Do not stage unrelated generated output, caches, build artifacts (including `ui/dist` and `target/`), local secrets, or user work.
 - Never revert or overwrite user or other-agent changes unless the user explicitly requests it.
 
 ## Commit Style
@@ -30,4 +30,6 @@ description: Git workflow for final Lilia desktop application changes. Use when 
 ## Dependency Updates
 
 - Keep dependency update commits dependency-only unless the user asked for extra work.
-- After changing LiliaUI dependencies or lockfiles, include the validation required by `$lilia-app-validation`.
+- For npm dependencies under `ui/`, run `cd ui && npm install && npm run build` and confirm the bundle still builds before committing; for Rust dependencies, run `cargo test` in the root workspace.
+- Never commit the `.nanaui-pin/` snapshot or V8 prebuilt libraries into this repo; they live outside the repository and are referenced by path.
+- After dependency changes, include the validation required by `$lilia-app-validation`.

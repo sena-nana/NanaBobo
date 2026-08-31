@@ -55,7 +55,10 @@ fn record_probe(message: &str) {
     LAST_PROBE
         .get_or_init(|| Mutex::new(String::new()))
         .lock()
-        .map(|mut slot| *slot = message.to_owned())
+        .map(|mut slot| {
+            slot.push_str(message);
+            slot.push('\n');
+        })
         .ok();
 }
 

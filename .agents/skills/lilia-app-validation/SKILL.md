@@ -1,6 +1,6 @@
 ---
 name: lilia-app-validation
-description: Validation strategy for final Lilia desktop application changes. Use when Codex needs to choose or report checks after app code, routes, commands, UI, Tauri Rust, dependencies, build config, documentation, tests, local LiliaUI dependency switching, or LiliaUI dependency updates change.
+description: Validation strategy for NanaBobo desktop app changes. Use when Codex needs to choose or report checks after host API entries, core crate business logic, frontend UI, routes, contracts, dependencies, build config, documentation, or tests change.
 ---
 
 # Lilia App Validation
@@ -9,40 +9,27 @@ description: Validation strategy for final Lilia desktop application changes. Us
 
 Run checks that validate real behavior affected by the change. Prefer targeted functional checks over broad or brittle assertions.
 
-- Always consider `yarn agent:debug --json` when app boundaries, important files, or recommended checks may have changed.
-- Use `$lilia-agent-debug` to choose checks for UI main paths, `data-agent-id`, debug harnesses, and desktop replay support.
-- Use `yarn test` for route behavior, command wiring, component behavior, config synchronization expectations, and business logic.
-- Use `yarn build` for frontend compile, bundling, route import, and type integration risk.
-- Use `cargo check --manifest-path src-tauri/Cargo.toml` for app-owned Rust changes.
-- Use `yarn verify` for broader final confidence when the change crosses frontend, Tauri, config, or build boundaries.
+- Use `cargo test` in the root workspace for Rust changes: it runs the `nanabobo-core` business tests plus the `app` host's headless acceptance tests, which mount the real Vue IIFE in a V8 engine and assert the shell, home page, and per-page navigation via semantic snapshots.
+- Use `yarn test` (vitest) for frontend contract mapping, route-driven visibility, component behavior, and business logic.
+- Use `cd ui && npm run build` to validate the frontend bundle; then `cargo build -p nanabobo-app` embeds the fresh IIFE and CSS into the `target/debug/nanabobo.exe` host for a manual smoke run of the real window.
+- Use `cargo fmt`/`cargo clippy` when touching Rust sources if the change is non-trivial.
 
 ## Test Quality
 
 - Add tests only for behavior changes or meaningful regression risk.
 - Do not add tests for documentation-only, comment-only, or formatting-only changes.
 - Do not write low-value tests that only hard-match log text, incidental strings, implementation comments, or snapshot-like markup.
-- Do not use raw string matching as the main assertion when it does not prove the feature works; assert the behavior through roles, events, state changes, command effects, data results, or observable outcomes.
-- Test user-visible behavior, command results, route outcomes, config synchronization, permission availability, or data-contract handling.
-- For Agent debug changes, follow `$lilia-agent-debug` test-quality and gating requirements.
+- Do not use raw string matching as the main assertion when it does not prove the feature works; assert the behavior through roles, events, state changes, host API effects, data results, or observable outcomes.
+- Test user-visible behavior, host API results, route outcomes, and data-contract handling.
 - Keep tests focused on the changed capability and existing public behavior.
 
-## LiliaUI Dependency Changes
+## Build And Dependency Changes
 
-When changing the local LiliaUI dependency switch, package scripts, or documentation:
+When changing the `ui/` vite build config, npm dependencies, or the Rust dependency graph:
 
-- Treat the switch itself as the behavior under test. Do not add low-value tests that hard-match script output.
-- Run `node --check scripts/lilia-ui-deps.mjs` after editing the switch script.
-- Run `yarn liliaui:local`, confirm every active `@lilia/*` package reports a local `portal:` source, then run `yarn liliaui:remote` and confirm `yarn liliaui:status` reports remote again.
-- Confirm `package.json` and `yarn.lock` do not retain local `resolutions` or `portal:` entries after switching back.
-- Run `yarn install --immutable` to prove the committed default dependency state still uses the pinned GitHub lockfile.
-- Skip broader desktop or Agent validation unless the change also affects app runtime behavior, build wrappers, UI, commands, or the Agent debug harness.
-
-When a final app consumes a changed LiliaUI package:
-
-- Validate LiliaUI in its source repository first: use `yarn typecheck` and `yarn test` for package or UI changes.
-- For `tauri-plugin-lilia`, run `cargo test -p tauri-plugin-lilia` in LiliaUI.
-- After refreshing the final app dependency or lockfile, run at least `yarn agent:debug --json`, `yarn test`, and any affected build or Tauri check.
-- For preset work, verify Lilia and Nana against both remote and local sources. Each combination must pass tests, production bundle guard, and Tauri no-bundle compilation; Nana additionally runs browser workflows.
+- Treat the change itself as the behavior under test; run the affected build end to end (`cd ui && npm install && npm run build`, then `cargo build -p nanabobo-app`).
+- Remember the local prerequisites: the `.nanaui-pin/` snapshot next to the repo backs all `nana-*` path dependencies, and the V8 prebuilt library requires `RUSTY_V8_SKIP_DOWNLOAD=1` (already set in `.cargo/config.toml`); copy `rusty_v8.lib` into `target/release/gn_out/obj/` before release builds.
+- Confirm no build artifact (`ui/dist`, `target/`) is committed accidentally.
 
 ## Reporting
 

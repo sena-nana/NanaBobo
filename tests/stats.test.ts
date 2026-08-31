@@ -1,4 +1,4 @@
-import { render } from "@testing-library/vue";
+import { mount } from "@vue/test-utils";
 import { nextTick, ref, defineComponent } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RoomInfo } from "../src/contracts/bilibili";
@@ -71,7 +71,7 @@ describe("统计会话", () => {
         return () => null;
       },
     });
-    render(Host);
+    mount(Host);
 
     roomSession.info.value = room;
     await nextTick();

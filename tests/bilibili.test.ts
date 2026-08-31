@@ -27,11 +27,14 @@ afterEach(() => vi.useRealTimers());
 describe("B站 command facade", () => {
   it("keeps command names and payloads at the app boundary", async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
-    const api = createBilibiliApi(async <T>(command: string, args?: Record<string, unknown>) => {
-      calls.push({ command, args });
-      if (command === "auth_qr_start") return { session_id: "session", svg: "<svg />", expires_at: 10 } as T;
-      return room as T;
-    });
+    const api = createBilibiliApi(
+      async <T>(command: string, args?: Record<string, unknown>) => {
+        calls.push({ command, args });
+        if (command === "auth_qr_start") return { session_id: "session", svg: "<svg />", expires_at: 10 } as T;
+        return room as T;
+      },
+      async <T>(_event: string, _handler: (payload: T) => void) => () => {},
+    );
 
     await api.startQr();
     await api.getRoomInfo("123");

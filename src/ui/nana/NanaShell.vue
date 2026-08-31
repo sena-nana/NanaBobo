@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { RouterView, useRoute, useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import NanaAppShell from "@nanaui/nanavue-components/NanaAppShell";
 import NanaSidebarFrame from "@nanaui/nanavue-components/NanaSidebarFrame";
 import NanaSidebarNav from "@nanaui/nanavue-components/NanaSidebarNav";
 import NanaSidebarFooter from "@nanaui/nanavue-components/NanaSidebarFooter";
+import NanaSettingsPage from "@nanaui/nanavue-components/NanaSettingsPage";
+import HomePage from "../../features/home/HomePage.vue";
+import DanmakuAssistantPage from "../../features/danmaku/DanmakuAssistantPage.vue";
+import StatsPage from "../../features/stats/StatsPage.vue";
+import HistoryPage from "../../features/history/HistoryPage.vue";
 import NanaSessionProvider from "../../features/session/NanaSessionProvider.vue";
 
 const route = useRoute();
@@ -27,8 +32,7 @@ function onSelect(item: { key?: string }) {
 </script>
 
 <template>
-  <NanaAppShell title="Nana播播工具箱" class="app-shell">
-    <div class="app-layout">
+  <NanaAppShell title="Nana播播工具箱" class="app-shell">    <div class="app-layout">
       <NanaSidebarFrame class="app-sidebar" aria-label="主导航">
         <NanaSidebarNav
           :items="navItems"
@@ -50,7 +54,23 @@ function onSelect(item: { key?: string }) {
       </NanaSidebarFrame>
       <main class="app-main">
         <NanaSessionProvider>
-          <RouterView />
+          <!-- NanaUI 渲染器对 RouterView 插槽内的组件替换补丁不生效,
+               五页常驻挂载、v-show 切换行内可见性(上游修复后可换回 RouterView)。 -->
+          <div v-show="route.path === '/'">
+            <HomePage />
+          </div>
+          <div v-show="route.path === '/assistant'">
+            <DanmakuAssistantPage />
+          </div>
+          <div v-show="route.path === '/stats'">
+            <StatsPage />
+          </div>
+          <div v-show="route.path === '/history'">
+            <HistoryPage />
+          </div>
+          <div v-show="route.path === '/settings'">
+            <NanaSettingsPage />
+          </div>
         </NanaSessionProvider>
       </main>
     </div>

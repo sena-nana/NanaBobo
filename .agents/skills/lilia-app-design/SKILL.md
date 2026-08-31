@@ -1,13 +1,13 @@
 ---
 name: lilia-app-design
-description: Design and interaction standards for final Lilia desktop applications. Use when Codex designs, implements, reviews, or fixes application pages, sidebar entries, empty/loading/error states, cards, dialogs, menus, scoped styles, visual hierarchy, or any UI behavior in a Lilia app that consumes @lilia/ui.
+description: Design and interaction standards for the NanaBobo native NanaUI desktop app. Use when Codex designs, implements, reviews, or fixes application pages, sidebar entries, empty/loading/error states, cards, dialogs, menus, scoped styles, visual hierarchy, or any UI behavior in src/features or src/ui.
 ---
 
 # Lilia App Design
 
 ## Core Direction
 
-Design final applications as restrained engineering tools. Prioritize clear position, current state, available actions, and decisions that need user attention.
+Design the application as a restrained engineering tool. Prioritize clear position, current state, available actions, and decisions that need user attention.
 
 Every main view must answer:
 
@@ -19,10 +19,8 @@ Never show technical implementation notes, roadmap placeholders, or UI that look
 
 ## Layout
 
-- Use the local `src/ui` facade for the selected Layer's shell, sidebar, settings page, theme, and page patterns.
-- Put final app business pages in the main workspace only. Do not rebuild the shell structure inside an app page.
-- Configure navigation, status, settings, and capability wiring through the active preset adapter.
-- Connect pages through async component imports in the active preset adapter.
+- Use the local `src/ui` facade components for controls and the `src/ui/nana/NanaShell.vue` shell for sidebar, navigation, and native window chrome; do not rebuild shell structure inside an app page.
+- Business pages stay permanently mounted inside the shell; navigation toggles visibility via route-driven `is-active` classes, so avoid entrance animations on mount and keep per-page state stable across navigation.
 - Avoid landing-page composition, hero blocks, oversized headings, decorative panels, marketing card streams, and nested cards.
 - Use cards only for independent information groups, repeated items, dialogs, and actual tool containers.
 
@@ -31,14 +29,13 @@ Never show technical implementation notes, roadmap placeholders, or UI that look
 - Keep the interface quiet, dense enough for repeated work, and easy to scan.
 - Use this hierarchy: main content > current state > process information and secondary actions.
 - Use short, direct, actionable copy. Buttons name actions, status text states facts, hints explain impact.
-- Prefer icon buttons for familiar tools such as collapse, search, settings, expand, and window controls.
-- Use the LiliaUI `@lucide/vue` icon convention when an icon exists.
+- Prefer icon buttons for familiar tools such as collapse, search, settings, and expand.
 - Use text buttons when the action needs explicit wording.
 - Rows and controls must have clear hover, active, muted, disabled, loading, empty, and error states without layout shift.
 
 ## Tokens And Styles
 
-Use CSS variables from `src/ui/styles.css`. Do not create a second public color system inside the final app.
+Use CSS variables from `src/ui/nana-styles.css` (the migrated Lilia-style token set). Do not create a second public color system inside the app.
 
 - Surface: `--bg`, `--bg-elev`, `--bg-subtle`
 - Interaction: `--bg-hover`, `--bg-active`, `--border-soft`, `--border`, `--border-strong`
@@ -48,44 +45,39 @@ Use CSS variables from `src/ui/styles.css`. Do not create a second public color 
 
 Use soft state tokens only for state backgrounds, selected backgrounds, dangerous hover, or confirmation states. Do not turn them into large page backgrounds or decorative blocks.
 
-Keep app-specific CSS in the business component's scoped style. Move cross-page, shell-specific, or component-system styles to LiliaUI, then update the app dependency.
+Keep app-specific CSS in the business component's scoped style. Move cross-page or shell-level styles into `src/ui/nana-styles.css`; component-system gaps belong to the NanaUI upstream — record them, do not patch the `.nanaui-pin/` snapshot.
 
 ## Page Surfaces
 
-- Use `.page-header`, `.card`, `.kv`, and other LiliaUI page classes before adding local CSS.
+- Use the `.page-header`, `.card`, `.kv`, and other global page classes from `nana-styles.css` before adding local CSS.
 - Page titles should stay compact: about 18px/600 for page headings, 13px muted text for descriptions.
 - Keep page headers for orientation and state, not hero content.
 - Cards use 8px radius, modest padding, `--border`, and stable dimensions where content can change.
 - Card headings should feel like group labels, not marketing headlines.
 - Key-value layouts must handle long paths, versions, and identifiers with wrapping.
-- Menus, dropdowns, context menus, and confirm dialogs should use LiliaUI components and pass real items and handlers.
+- Menus, dropdowns, context menus, and confirm dialogs use the native shell's components and pass real items and handlers.
 - Dangerous actions use error color only for dangerous hover, pending, or confirmation state.
 
 ## Motion And State
 
 - Keep hover, active, border, and text color transitions around 0.12s.
 - Avoid attention-grabbing movement, scaling, strong shadows, or saturated decorative color.
-- Respect `prefers-reduced-motion: reduce`.
 - Loading, empty, and disabled states must not resize controls or shift surrounding layout.
 
-## Agent-Friendly UI
+## Honest State
 
-Use `$lilia-agent-debug` for detailed Agent debug implementation and validation rules. For design work, keep the user-facing UI normal while exposing stable hidden structure.
+For design work, keep the user-facing UI normal and truthful:
 
-- Keep `data-agent-id` invisible and non-semantic to users. Do not add public technical instructions, automation labels, or debug-only copy to the UI.
-- Important state must be visible as product state: pending approval, blocked work, failed action, empty result, loading, unavailable provider, and recoverable error all need clear user-facing states and real actions where applicable.
-- If a visible action cannot be executed, show a truthful unavailable state or remove the action. Do not present placeholder buttons, fake menus, fake sidebar items, or unconnected Agent affordances.
+- Important state must be visible as product state: pending login, blocked work, failed action, empty result, loading, unavailable upstream, and recoverable error all need clear user-facing states and real actions where applicable.
+- If a visible action cannot be executed, show a truthful unavailable state or remove the action. Do not present placeholder buttons, fake menus, fake sidebar items, or unconnected affordances.
 
 ## Review Checklist
 
 - The UI still feels like a restrained engineering tool.
 - The strongest visual weight is on real user content and current state.
-- No public UI, shell behavior, or styling system was copied into the app.
-- New colors come from LiliaUI tokens or belong in LiliaUI first.
+- New colors come from the `nana-styles.css` tokens or belong in `nana-styles.css` first.
 - App-specific styles are scoped to business components.
 - Navigation and actions are real, reachable, and wired.
-- `$lilia-agent-debug` is followed for Agent-operated flows.
-- No debug-only Agent affordance or technical implementation explanation leaks into production UI.
-- Light and dark themes remain readable.
+- No technical implementation explanation leaks into production UI.
+- Light and dark appearances remain readable.
 - Hover, active, loading, empty, and disabled states keep stable geometry.
-- Settings, shell, menus, theme, default assets, and window state remain owned by LiliaUI.

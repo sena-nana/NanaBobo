@@ -1,4 +1,4 @@
-import { render } from "@testing-library/vue";
+import { mount } from "@vue/test-utils";
 import { defineComponent, nextTick, ref } from "vue";
 import { describe, expect, it, vi } from "vitest";
 import type { DanmakuMessage, DanmakuStatus, RoomInfo } from "../src/contracts/bilibili";
@@ -32,7 +32,7 @@ describe("弹幕接收会话", () => {
         return () => null;
       },
     });
-    render(Host);
+    mount(Host);
     await nextTick();
 
     await session?.start();
@@ -64,7 +64,7 @@ describe("弹幕接收会话", () => {
         return () => null;
       },
     });
-    render(Host);
+    mount(Host);
     await nextTick();
 
     onStatus?.({ connection_id: "connection", room_id: 123, state: "connected", message: null });

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/vue";
+import { mount, type VueWrapper } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
 import type { AccountStatus, RoomInfo } from "../src/contracts/bilibili";
@@ -66,65 +66,85 @@ beforeEach(() => {
 });
 
 function renderHome() {
-  return render(NanaSessionProvider, {
+  return mount(NanaSessionProvider, {
     slots: { default: () => h(HomePage) },
     global: { stubs: { RouterLink: RouterLinkStub } },
   });
 }
 
-function expectHomeSummaryRemoved(container: HTMLElement) {
-  expect(container.querySelector('[data-agent-id="home.summary"]')).toBeNull();
-  expect(screen.queryByText("最近流水")).toBeNull();
-  expect(screen.queryByText("当前关注数")).toBeNull();
+/** 等价于 testing-library 的 queryByText 精确匹配:存在自身文本恰好等于目标的元素。 */
+function hasExactText(wrapper: VueWrapper, text: string) {
+  return wrapper.findAll("*").some((node) => node.text() === text && node.children().length === 0);
+}
+
+async function waitForText(wrapper: VueWrapper, text: string) {
+  await vi.waitFor(() => expect(wrapper.text()).toContain(text));
+}
+
+function expectHomeSummaryRemoved(wrapper: VueWrapper) {
+  expect(wrapper.find('[data-agent-id="home.summary"]').exists()).toBe(false);
+  expect(wrapper.text()).not.toContain("最近流水");
+  expect(wrapper.text()).not.toContain("当前关注数");
 }
 
 describe("首页直播间工作流", () => {
   it("未登录时只显示登录入口，不显示房间输入", async () => {
     mocks.api.getStatus.mockResolvedValue({ authenticated: false, account: null });
-    const { container } = renderHome();
+    const wrapper = renderHome();
 
-    await screen.findByRole("heading", { name: "登录后连接直播间" });
-    expect(screen.queryByRole("textbox", { name: "直播间号" })).toBeNull();
-    expect(screen.getByRole("img", { name: "直播间在线人数和关注数趋势图" })).toBeVisible();
-    expect(screen.getByText("连接直播间后开始记录数据")).toBeVisible();
-    expectHomeSummaryRemoved(container);
-    expect(container.querySelector('[data-agent-id="home.trend-card"]')).not.toBeNull();
-    expect(screen.queryByText("数据趋势")).toBeNull();
-    expect(screen.queryByText("直播间", { exact: true })).toBeNull();
-    expect(screen.queryByText("接收当前直播间的实时弹幕")).toBeNull();
+    await waitForText(wrapper, "登录后连接直播间");
+    expect(wrapper.find('[data-agent-id="room.input"]').exists()).toBe(false);
+    expect(wrapper.find('svg[aria-label="直播间在线人数和关注数趋势图"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("连接直播间后开始记录数据");
+    expectHomeSummaryRemoved(wrapper);
+    expect(wrapper.find('[data-agent-id="home.trend-card"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("数据趋势");
+    expect(hasExactText(wrapper, "直播间")).toBe(false);
+    expect(wrapper.text()).not.toContain("接收当前直播间的实时弹幕");
   });
 
   it("扫码成功后才显示房间连接输入", async () => {
     mocks.api.getStatus.mockResolvedValue({ authenticated: false, account: null });
-    renderHome();
+    const wrapper = renderHome();
 
-    await waitFor(() => expect(mocks.api.getStatus).toHaveBeenCalledOnce());
-    const loginButton = await screen.findByRole("button", { name: "扫码登录" });
-    await fireEvent.click(loginButton);
-    await fireEvent.click(await screen.findByRole("button", { name: "检查登录状态" }));
+    await vi.waitFor(() => expect(mocks.api.getStatus).toHaveBeenCalledOnce());
+    const loginButton = await vi.waitFor(() => {
+      const button = wrapper.find('[data-agent-id="account.login"]');
+      expect(button.exists()).toBe(true);
+      return button;
+    });
+    await loginButton.trigger("click");
 
-    await screen.findByRole("textbox", { name: "直播间号" });
-    expect(screen.getByRole("button", { name: "连接直播间" })).toBeVisible();
-    expect(screen.queryByText("输入房间号，查看主播和当前直播状态。")).toBeNull();
+    const checkButton = await vi.waitFor(() => {
+      const button = wrapper.find('[data-agent-id="account.check-login"]');
+      expect(button.exists()).toBe(true);
+      return button;
+    });
+    await checkButton.trigger("click");
+
+    await vi.waitFor(() => expect(wrapper.find('[data-agent-id="room.input"]').exists()).toBe(true));
+    expect(wrapper.find('[data-agent-id="room.query"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("输入房间号，查看主播和当前直播状态。");
   });
 
   it("恢复保存的房间并显示主播头像，切换时清除保存状态", async () => {
     localStorage.setItem("nanabobo.live.room-id", "123");
-    const { container } = renderHome();
+    const wrapper = renderHome();
 
-    await screen.findByText("Nana");
-    const avatar = screen.getByRole("img", { name: "" });
-    expect(avatar.getAttribute("src")).toBe(room.owner_avatar_url);
-    expect(avatar.getAttribute("referrerpolicy")).toBe("no-referrer");
-    expect(mocks.api.getRoomInfo).toHaveBeenCalledWith("123");
-    expect(screen.getByRole("img", { name: "直播间在线人数和关注数趋势图" })).toBeVisible();
-    expect(screen.getAllByText("42").length).toBeGreaterThan(0);
-    expectHomeSummaryRemoved(container);
-    expect(screen.queryByText("直播测试")).toBeNull();
-    expect(screen.queryByText("直播状态")).toBeNull();
+    await waitForText(wrapper, "Nana");
+    await vi.waitFor(() => expect(wrapper.find("img.owner-avatar").exists()).toBe(true));
+    const avatar = wrapper.get("img.owner-avatar");
+    expect(avatar.attributes("src")).toBe(room.owner_avatar_url);
+    expect(avatar.attributes("referrerpolicy")).toBe("no-referrer");
+    await vi.waitFor(() => expect(mocks.api.getRoomInfo).toHaveBeenCalledWith("123"));
+    expect(wrapper.find('svg[aria-label="直播间在线人数和关注数趋势图"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("42");
+    expectHomeSummaryRemoved(wrapper);
+    expect(wrapper.text()).not.toContain("直播测试");
+    expect(wrapper.text()).not.toContain("直播状态");
 
-    await fireEvent.click(screen.getByRole("button", { name: "切换直播间" }));
-    await waitFor(() => expect(localStorage.getItem("nanabobo.live.room-id")).toBeNull());
-    expect(screen.getByRole("textbox", { name: "直播间号" })).toBeVisible();
+    await wrapper.get('[data-agent-id="room.disconnect"]').trigger("click");
+    await vi.waitFor(() => expect(localStorage.getItem("nanabobo.live.room-id")).toBeNull());
+    await vi.waitFor(() => expect(wrapper.find('[data-agent-id="room.input"]').exists()).toBe(true));
   });
 });

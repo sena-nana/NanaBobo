@@ -902,3 +902,28 @@ body {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* 页面常驻挂载:非当前页隐藏。 */
+.app-page {
+  display: none;
+  min-height: 100%;
+}
+
+.app-page.is-active {
+  display: block;
+}
+
+.app-pages {
+  min-height: 100%;
+}
+
+/* 主区宽度约束:防止图表等内容把布局撑出窗口。 */
+.app-main {
+  overflow: hidden auto;
+}
+
+.app-pages,
+.app-page {
+  width: 100%;
+  max-width: 100%;
+}

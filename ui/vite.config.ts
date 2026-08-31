@@ -3,8 +3,9 @@ import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
+// 依赖统一由仓库根提供:ui/ 不再有独立 node_modules。
 const runtimeCore = fileURLToPath(
-  new URL("./node_modules/@vue/runtime-core/dist/runtime-core.esm-bundler.js", pathToFileURL(resolve(process.cwd(), "vite.config.ts")).href),
+  new URL("../node_modules/@vue/runtime-core/dist/runtime-core.esm-bundler.js", pathToFileURL(resolve(process.cwd(), "vite.config.ts")).href),
 );
 const nanaPackages = resolve(process.cwd(), "../../.nanaui-pin/packages");
 
@@ -27,8 +28,10 @@ export default defineConfig({
     cssCodeSplit: false,
     emptyOutDir: true,
     lib: {
-      entry: "../src/nana-main.ts",
+      entry: "../src/main.ts",
       name: "NanaBoboUi",
+      // ui/ 不再有 package.json,显式固定 CSS 产物名(宿主按该路径注入样式)。
+      cssFileName: "nanabobo-ui",
       formats: ["iife"],
       fileName: () => "nanabobo.iife.js",
     },

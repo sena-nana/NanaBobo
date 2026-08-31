@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { nanaHost } from "../ui/nanaHost";
 import type {
     AccountStatus,
@@ -11,7 +9,8 @@ import type {
     RoomInfo,
 } from "../contracts/bilibili";
 
-export type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+export type UnlistenFn = () => void;
+export type InvokeCommand = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export type EventListen = <T>(
     event: string,
     handler: (payload: T) => void,
@@ -30,36 +29,22 @@ export interface BilibiliApi {
   listenDanmakuStatus: (handler: (status: DanmakuStatus) => void) => Promise<UnlistenFn>;
 }
 
-function tauriListen(): EventListen {
-  return (event, handler) =>
-    listen(event, (backendEvent) => handler(backendEvent.payload as never));
-}
-
-function nanaListen(): EventListen {
+/** Nana 宿主传输:命令经 __nanaHost.invoke,事件经宿主桥 on 订阅。 */
+function detectTransport(): { invoke: InvokeCommand; listen: EventListen } {
   const host = nanaHost();
-  return async (event, handler) => {
+  const invoke = ((command, args) =>
+    host.invoke(command, args === undefined ? [] : [args])) as InvokeCommand;
+  const listen: EventListen = async (event, handler) => {
     host.on(event, handler as (payload: unknown) => void);
     return () => {};
   };
-}
-
-/** 宿主运行时探测:Tauri WebView 与 NanaUI 宿主共用同一套命令契约。 */
-function detectTransport(): { invoke: TauriInvoke; listen: EventListen } {
-  if (typeof globalThis !== "undefined" && "Nana" in globalThis) {
-    const host = nanaHost();
-    return {
-      invoke: ((command, args) =>
-        host.invoke(command, args === undefined ? [] : [args])) as TauriInvoke,
-      listen: nanaListen(),
-    };
-  }
-  return { invoke, listen: tauriListen() };
+  return { invoke, listen };
 }
 
 const transport = detectTransport();
 
 export function createBilibiliApi(
-  invokeCommand: TauriInvoke = transport.invoke,
+  invokeCommand: InvokeCommand = transport.invoke,
   listenCommand: EventListen = transport.listen,
 ): BilibiliApi {
   return {

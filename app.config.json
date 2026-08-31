@@ -3,10 +3,5 @@
   "productTitle": "Nana播播工具箱",
   "version": "0.1.0",
   "identifier": "com.senanana.nanabobo",
-  "storageKeyPrefix": "nanabobo",
-  "ui": {
-    "preset": "lilia",
-    "density": "compact",
-    "accent": "blue"
-  }
+  "storageKeyPrefix": "nanabobo"
 }
