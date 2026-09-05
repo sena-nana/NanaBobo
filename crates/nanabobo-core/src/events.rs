@@ -2,8 +2,7 @@
 
 use serde_json::Value;
 
-/// 由宿主(Tauri、NanaUI 等)实现;事件名沿用 `nanabobo://` 约定,
-/// 前端监听侧契约保持不变。
+/// 由宿主实现。事件名沿用 `nanabobo://` 约定。
 pub trait EventSink: Send + Sync + 'static {
     fn emit(&self, event: &str, payload: Value);
 }

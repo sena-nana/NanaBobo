@@ -5,16 +5,15 @@ description = "Nana播播工具箱业务核心:第三方 B 站接口适配、凭
 authors = ["sena-nana"]
 edition = "2021"
 
-# 依赖刻意保持自包含(不继承 workspace),使独立构建(如迁移期的
-# src-tauri 薄壳)与本 workspace 看到完全一致的版本。
+# 依赖刻意保持自包含(不继承 workspace),使独立构建与本 workspace
+# 看到完全一致的版本。
 
 [dependencies]
-brotli = "8"
+brotli = "9"
 flate2 = "1.1"
 futures-util = "0.3"
-keyring = { version = "3.6", features = ["windows-native"] }
-qrcode = "0.14"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+keyring = { version = "4", default-features = false, features = ["v1"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

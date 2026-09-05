@@ -16,12 +16,12 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely.
 本仓库通过 `.agents/skills` 为基于模板创建的最终应用提供 Agent 能力。处理对应任务时优先使用这些 Skill,不要把细则继续堆进 `AGENTS.md`。
 
 - `$lilia-app-design`: 设计、交互、视觉层级、页面样式、侧边栏、卡片、浮层和状态评审。
-- `$lilia-app-coding`: 功能实现、问题修复、重构、路由、host API、业务页面和 app/ 宿主、nanabobo-core 代码。
-- `$lilia-app-boundary`: 判断改动属于 app/ 宿主、nanabobo-core、src/ui 门面、src/features 业务页还是 NanaUI 上游。
-- `$lilia-app-validation`: 选择功能验证、测试、构建、cargo/vite 检查和结果汇报方式。
+- `$lilia-app-coding`: 功能实现、问题修复、重构、L3 页面、宿主和 nanabobo-core 代码。
+- `$lilia-app-boundary`: 判断改动属于 app/ 宿主、nanabobo-core 还是 NanaUI 上游。
+- `$lilia-app-validation`: 选择功能验证、测试、构建、cargo 检查和结果汇报方式。
 - `$lilia-app-git`: 暂存、提交、推送、合并和依赖更新收口。
-- `$lilia-agent-debug`: 已移除的 LiliaUI Agent 调试入口说明;当前诊断手段是无头验收测试与 host_api 探针。
-- `$nanabobo-development`: B站登录、房间信息、弹幕、凭据安全、跨端契约和 NanaBobo 业务实现。
+- `$lilia-agent-debug`: 已移除的 LiliaUI Agent 调试入口说明;当前诊断手段是 cargo 测试与手动冒烟。
+- `$nanabobo-development`: B站登录、房间信息、弹幕、凭据安全和 NanaBobo 业务实现。
 
 ## 硬约束
 
@@ -35,10 +35,9 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely.
 
 ## NanaBobo 业务边界
 
-- `src/features/**` 只负责真实可用的账号、直播和后续回放工作流；不添加未接通的占位页面、按钮或导航。
-- `src/contracts/**` 保存前端可见的稳定业务契约；B站原始响应、请求头、Cookie 和 Token 不得跨过 Rust 适配器边界。
-- `crates/nanabobo-core/src/bilibili/**` 负责 B站第三方接口适配与字段映射；上游字段变化不得直接泄漏到 Vue。
-- `crates/nanabobo-core/src/credential_store/**` 负责登录态存取。B站登录态只进入 Windows OS Keyring，不进入本地文件存储、日志或前端响应。
-- `app/` 是 NanaUI 宿主 bin crate；业务命令在 `app/src/host_api.rs` 经 `HostApiRegistry` 注册为 host API。host API 必须有结构化输入、结构化输出和可恢复错误；错误消息不得包含原始上游响应或敏感凭据。
-- 前端只通过 `src/ui` 门面（`nanaHost.ts` 收口的 `Nana.host.invoke` / `Nana.host.on`）调用宿主与监听事件；业务页面禁止直接 import `@nanaui/*`。
+- `app/src/` 只负责真实可用的账号、直播工作流的 L3 界面装配；不添加未接通的占位页面、按钮或导航。
+- `crates/nanabobo-core/src/bilibili/**` 负责 B站第三方接口适配与字段映射；上游字段变化不得直接泄漏到 UI。
+- `crates/nanabobo-core/src/credential_store/**` 负责登录态存取。B站登录态只进入 Windows OS Keyring，不进入本地文件存储、日志或界面状态。
+- `app/` 是 NanaUI L3 宿主；业务命令由 `session.rs` 直接调用 `nanabobo-core`。错误消息不得包含原始上游响应或敏感凭据。
+- 前端不再使用 Vue / Yarn / Node。界面只通过 `nana_ui::runtime` 建树，禁止为了产品 UI 再引入 WebView 或 IIFE。
 - 直播录制、回放索引等未实现能力只保留在架构文档中，完成真实端到端行为后才能进入 UI。

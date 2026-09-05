@@ -2,13 +2,6 @@
 resolver = "2"
 members = ["app", "crates/nanabobo-core"]
 
-# v8 crate 的 build.rs 在 manifest 目录与 OUT_DIR 跨盘(注册表缓存在 C 盘、
-# 构建产物在 D 盘)时会创建 gn_root 符号链接,而 Windows 创建目录符号链接
-# 需要开发者模式或管理员令牌。patch 到本盘的同一份源码即可绕过;
-# C 盘注册表路径保留 junction 兼容其他 workspace。
-[patch.crates-io]
-v8 = { path = "../.cargo-disk-move/v8-152.2.0" }
-
 [profile.dev]
 debug = "line-tables-only"
 incremental = true

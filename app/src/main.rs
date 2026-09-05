@@ -1,24 +1,23 @@
-//! NanaBobo 原生宿主:V8 引擎执行 Vue IIFE,经 NanaUI Scene 画进 winit 窗口。
+//! NanaBobo L3 宿主：Rust 控件直接写入 NanaUI RuntimeDocument。
 
-mod host_api;
+mod images;
+mod session;
+mod ui;
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
-use nana_js_engine::{JsEngine, JsEngineError, RuntimeArtifact};
+use nana_ui::runtime::{DocumentId, RuntimeDocument};
 use nana_ui::{
-    HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeWindowSettings, run_runtime,
+    run_runtime, HostTextureRegistry, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    RuntimeWindowSettings, ThemeMode,
 };
-use nana_ui_platform::{InputEvent, WindowEvent, WindowId};
-use nana_ui_scene::RuntimeDocument;
-use nana_ui_vue::{BridgeEvent, VueHostedRuntime, VueRuntimeProgram};
+use nana_ui_platform::{WindowEvent, WindowId};
 
-use crate::host_api::registry as host_registry;
-
-const APP_JS: &str = include_str!("../../ui/dist/nanabobo.iife.js");
-const APP_CSS: &str = include_str!("../../ui/dist/nanabobo-ui.css");
-
-type AppEngine = nana_js_v8::V8Engine;
+use crate::images::DecodedImage;
+use crate::session::{AppEvent, Session, Wake};
+use crate::ui::Shell;
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<NanaBoboProgram>(
@@ -29,285 +28,154 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
     )
 }
 
-fn artifact() -> RuntimeArtifact {
-    RuntimeArtifact::from_source("nanabobo.js", APP_JS)
-}
-
-fn build_runtime(
-    gpu: HostedGpuResources,
-    width: u32,
-    height: u32,
-    scale_factor: f32,
-) -> Result<VueHostedRuntime<AppEngine>, JsEngineError> {
-    let engine = AppEngine::new();
-    let events = engine
-        .host_event_sender()
-        .expect("v8 engine exposes a host event sender");
-    let mut runtime = VueHostedRuntime::new(
-        engine,
-        artifact(),
-        host_registry(events),
-        width,
-        height,
-        scale_factor,
-    )?;
-    runtime.bind_host_gpu(gpu)?;
-    runtime.inject_stylesheet(APP_CSS)?;
-    let mount = runtime.engine_mut().resolve_function("__nanabobo.mount")?;
-    runtime.engine_mut().invoke(mount, &[])?;
-    runtime.engine_mut().run_microtasks()?;
-    Ok(runtime)
-}
-
 struct NanaBoboProgram {
-    inner: VueRuntimeProgram<AppEngine>,
+    _runtime: tokio::runtime::Runtime,
+    document: RuntimeDocument,
+    shell: Shell,
+    session: Session,
+    textures: HostTextureRegistry,
+    decoded: HashMap<String, DecodedImage>,
+    gpu_keep: HashMap<String, wgpu::Texture>,
+    next_texture_id: u64,
+}
+
+impl NanaBoboProgram {
+    fn apply_pending(&mut self) {
+        let events = self.session.inbox.drain();
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            self.session.apply(event);
+        }
+        let _ = self.shell.sync(&mut self.document, &self.session);
+    }
+
+    fn upload_image(&mut self, context: &RuntimeProgramContext<Wake>, image: &DecodedImage) {
+        self.next_texture_id = self.next_texture_id.saturating_add(1);
+        let keep = crate::images::upload(
+            context.gpu(),
+            &self.textures,
+            image,
+            self.next_texture_id,
+        );
+        self.gpu_keep.insert(image.slot.clone(), keep);
+    }
 }
 
 impl RuntimeProgram for NanaBoboProgram {
-    type Message = BridgeEvent;
-    type Error = JsEngineError;
+    type Message = Wake;
+    type Error = String;
 
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-        let geometry = context.geometry();
-        let runtime = build_runtime(
-            context.gpu().clone(),
-            geometry.physical_size.0.max(1),
-            geometry.physical_size.1.max(1),
-            geometry.scale_factor.max(0.01),
-        )?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        let session = Session::new(runtime.handle().clone())?;
+        let dispatch = context.clone();
+        session.bind_dispatch(Arc::new(move || dispatch.dispatch(Wake)));
+        session.load_account();
+        let mut document = RuntimeDocument::new(DocumentId::new(1).expect("document id"));
+        let shell = Shell::mount(&mut document, &session).map_err(|error| error.to_string())?;
         Ok((
             Self {
-                inner: VueRuntimeProgram::from_runtime(runtime),
+                _runtime: runtime,
+                document,
+                shell,
+                session,
+                textures: HostTextureRegistry::new(),
+                decoded: HashMap::new(),
+                gpu_keep: HashMap::new(),
+                next_texture_id: 1,
             },
-            Vec::new(),
+            vec![Wake],
         ))
     }
 
-    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
-        self.inner.document(id)
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        Ok((id == WindowId::PRIMARY).then(|| f(&self.document)))
     }
 
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
-        self.inner.document_mut(id)
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        Ok((id == WindowId::PRIMARY).then(|| f(&mut self.document)))
     }
 
     fn update(
         &mut self,
-        message: Self::Message,
-        context: &RuntimeProgramContext<Self::Message>,
+        _message: Self::Message,
+        _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        self.inner.update(message, context)
+        self.apply_pending();
+        RuntimeProgramUpdate::redraw(WindowId::PRIMARY)
     }
 
-    fn theme_mode(&self) -> nana_ui::ThemeMode {
-        self.inner.theme_mode()
+    fn theme_mode(&self) -> ThemeMode {
+        self.session.theme
     }
 
-    fn host_textures(&self, id: WindowId) -> Option<HostTextureRegistry> {
-        self.inner.host_textures(id)
+    fn host_textures(&self, _id: WindowId) -> Option<HostTextureRegistry> {
+        Some(self.textures.clone())
     }
 
     fn prepare_window_frame(
         &mut self,
-        id: WindowId,
+        _id: WindowId,
         context: &RuntimeProgramContext<Self::Message>,
     ) {
-        self.inner.prepare_window_frame(id, context);
-    }
-
-    fn take_accessibility_update(
-        &mut self,
-        id: WindowId,
-    ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
-        self.inner.take_accessibility_update(id)
+        for image in self.session.take_pending_images() {
+            self.upload_image(context, &image);
+            self.decoded.insert(image.slot.clone(), image);
+        }
     }
 
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
-        self.inner.rebuild_gpu(context);
-    }
-
-    fn input_event(
-        &mut self,
-        id: WindowId,
-        event: &InputEvent,
-        context: &RuntimeProgramContext<Self::Message>,
-    ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
-        self.inner.input_event(id, event, context)
+        self.gpu_keep.clear();
+        self.textures = HostTextureRegistry::new();
+        for image in self.decoded.values().cloned().collect::<Vec<_>>() {
+            self.upload_image(context, &image);
+        }
     }
 
     fn window_event(
         &mut self,
         event: WindowEvent,
-        context: &RuntimeProgramContext<Self::Message>,
+        _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        self.inner.window_event(event, context)
+        match event {
+            WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
+            _ => RuntimeProgramUpdate::default(),
+        }
     }
 
     fn next_wakeup(&self) -> Option<Instant> {
-        self.inner.next_wakeup()
+        self.session.next_wakeup()
     }
 
     fn wake(
         &mut self,
         now: Instant,
-        context: &RuntimeProgramContext<Self::Message>,
+        _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        self.inner.wake(now, context)
-    }
-
-    fn sync_animation_clock(&mut self, epoch: Instant) {
-        self.inner.sync_animation_clock(epoch);
-    }
-
-    fn animation_frame(
-        &mut self,
-        id: WindowId,
-        frame: nana_ui_runtime::AnimationFrame,
-        context: &RuntimeProgramContext<Self::Message>,
-    ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
-        self.inner.animation_frame(id, frame, context)
-    }
-
-    fn accessibility_action(
-        &mut self,
-        id: WindowId,
-        request: nana_ui::AccessibilityActionRequest,
-        context: &RuntimeProgramContext<Self::Message>,
-    ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
-        self.inner.accessibility_action(id, request, context)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nana_js_engine::HostValue;
-    use nana_ui::HostedGpuResources;
-    use nana_ui_vue::{VueWindowId, WidgetKind};
-    use std::sync::Arc;
-
-    fn gpu() -> HostedGpuResources {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .expect("无头 WGPU 适配器");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("nanabobo spike test"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            }))
-            .expect("无头 WGPU 设备");
-        HostedGpuResources::from_existing(adapter, Arc::new(device), Arc::new(queue))
-    }
-
-    fn snapshot_labels(runtime: &mut VueHostedRuntime<AppEngine>) -> Vec<String> {
-        for _ in 0..24 {
-            runtime.pump().unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        let host = runtime.vue().host(VueWindowId::PRIMARY).unwrap();
-        let snapshot = host.lock().unwrap().semantic_snapshot();
-        snapshot
-            .widgets
-            .iter()
-            .map(|widget| widget.props.label.clone())
-            .collect()
-    }
-
-    fn wait_for_label(runtime: &mut VueHostedRuntime<AppEngine>, needle: &str) -> bool {
-        let mut last = Vec::new();
-        for _ in 0..40 {
-            last = snapshot_labels(runtime);
-            if last.iter().any(|l| l.contains(needle)) {
-                return true;
+        if self.session.next_wakeup().is_some_and(|deadline| deadline <= now) {
+            if self.session.qr.is_some() {
+                self.session.inbox.push(AppEvent::PollQr);
+            }
+            if self.session.room.is_some() {
+                self.session.inbox.push(AppEvent::TickStats);
             }
         }
-        eprintln!("LABELS for {needle:?}: {last:?}");
-        false
-    }
-
-    #[test]
-    fn app_shell_mounts_with_navigation_and_home_page() {
-        let gpu = gpu();
-        let mut runtime = build_runtime(gpu, 1200, 800, 1.0).unwrap();
-
-        let labels = snapshot_labels(&mut runtime);
-        for expected in ["首页", "主播助手", "数据统计", "历史记录", "设置"] {
-            assert!(
-                labels.iter().any(|l| l.contains(expected)),
-                "侧边导航缺少「{expected}」: {labels:?}"
-            );
-        }
-
-        // 主页内容(工具区标题 + 房间连接表单)。会话状态依赖真实凭据与
-        // 网络,这里只断言与登录态无关的稳定内容。
-        assert!(
-            wait_for_label(&mut runtime, "实时直播工具"),
-            "主页工具区未渲染"
-        );
-        assert!(
-            wait_for_label(&mut runtime, "连接直播间"),
-            "房间连接面板未渲染"
-        );
-    }
-
-    fn navigate_to(runtime: &mut VueHostedRuntime<AppEngine>, path: &str) {
-        let navigate = runtime
-            .engine_mut()
-            .resolve_function("__nanabobo.navigate")
-            .expect("navigate 入口已暴露");
-        runtime
-            .engine_mut()
-            .invoke(navigate, &[HostValue::String(path.into())])
-            .unwrap();
-        runtime.engine_mut().run_microtasks().unwrap();
-        for _ in 0..12 {
-            runtime.pump().unwrap();
-        }
-        eprintln!("nav probe: {}", crate::host_api::probe_last());
-    }
-
-    #[test]
-    fn app_pages_render_via_navigation() {
-        let gpu = gpu();
-        let mut runtime = build_runtime(gpu, 1200, 800, 1.0).unwrap();
-        for _ in 0..24 {
-            runtime.pump().unwrap();
-        }
-
-        for (path, anchor) in [
-            ("/stats", "图例"),
-            ("/settings", "窗口材质"),
-        ] {
-            navigate_to(&mut runtime, path);
-            assert!(
-                wait_for_label(&mut runtime, anchor),
-                "{path} 未渲染「{anchor}」: {labels:?}",
-                labels = snapshot_labels(&mut runtime)
-            );
-        }
-
-        // 快照对部分页面文本提取不稳定,导航状态用探针断言。
-        for path in ["/assistant", "/history"] {
-            navigate_to(&mut runtime, path);
-            let probe = crate::host_api::probe_last();
-            assert!(
-                probe.contains(&format!("nav={path}")),
-                "{path} 导航未生效: {probe:?}"
-            );
-        }
+        self.apply_pending();
+        RuntimeProgramUpdate::redraw(WindowId::PRIMARY)
     }
 }

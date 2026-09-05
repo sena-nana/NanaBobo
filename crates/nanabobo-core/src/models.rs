@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AccountSummary {
@@ -16,7 +16,7 @@ pub struct AccountStatus {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct QrStartResponse {
     pub session_id: String,
-    pub svg: String,
+    pub payload: String,
     pub expires_at: u64,
 }
 
@@ -49,7 +49,7 @@ pub struct DanmakuConnection {
     pub room_id: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DanmakuConnectionState {
     Idle,
@@ -60,7 +60,7 @@ pub enum DanmakuConnectionState {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DanmakuStatus {
     pub connection_id: Option<String>,
     pub room_id: Option<u64>,
@@ -68,7 +68,7 @@ pub struct DanmakuStatus {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DanmakuMessage {
     pub connection_id: String,
     pub room_id: u64,

@@ -1,6 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use qrcode::{render::svg, QrCode};
 use reqwest::{header, Client};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -29,8 +28,6 @@ pub enum BilibiliError {
     InvalidResponse,
     #[error("login result did not contain a valid session")]
     InvalidLoginUrl,
-    #[error("qr code generation failed")]
-    QrCode,
 }
 
 #[derive(Clone)]
@@ -61,16 +58,41 @@ impl BilibiliClient {
             .map_err(BilibiliError::Request)?;
         let envelope: ApiEnvelope<QrGenerateData> = parse_json(response).await?;
         let data = envelope.into_data()?;
-        let qr = QrCode::new(data.url.as_bytes()).map_err(|_| BilibiliError::QrCode)?;
-        let svg = qr.render::<svg::Color>().min_dimensions(256, 256).build();
+        let payload = data.url.trim().to_owned();
+        if payload.is_empty() {
+            return Err(BilibiliError::InvalidResponse);
+        }
         let expires_at = now_seconds().saturating_add(180);
         Ok((
             QrSession {
                 qrcode_key: data.qrcode_key,
                 expires_at,
             },
-            svg,
+            payload,
         ))
+    }
+
+    pub async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, BilibiliError> {
+        let parsed = Url::parse(url).map_err(|_| BilibiliError::InvalidResponse)?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(BilibiliError::InvalidResponse);
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header(header::REFERER, "https://www.bilibili.com/")
+            .send()
+            .await
+            .map_err(BilibiliError::Request)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(BilibiliError::HttpStatus(status.as_u16()));
+        }
+        let bytes = response.bytes().await.map_err(BilibiliError::Request)?;
+        if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
+            return Err(BilibiliError::InvalidResponse);
+        }
+        Ok(bytes.to_vec())
     }
 
     pub async fn poll_qr(&self, qrcode_key: &str) -> Result<QrPollResult, BilibiliError> {
@@ -485,5 +507,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(missing.attention, None);
+    }
+
+    #[test]
+    fn fetch_bytes_rejects_non_http_urls() {
+        let client = super::BilibiliClient::new().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(runtime
+            .block_on(client.fetch_bytes("file:///tmp/avatar.png"))
+            .is_err());
     }
 }

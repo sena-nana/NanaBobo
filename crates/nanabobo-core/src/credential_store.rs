@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::sync::Mutex;
 
 use keyring::Entry;
@@ -57,13 +56,11 @@ impl CredentialStore for KeyringCredentialStore {
     }
 }
 
-#[cfg(test)]
 #[derive(Default)]
 pub struct MemoryCredentialStore {
     value: Mutex<Option<String>>,
 }
 
-#[cfg(test)]
 impl CredentialStore for MemoryCredentialStore {
     fn load(&self) -> Result<Option<String>, CredentialStoreError> {
         self.value

@@ -101,14 +101,12 @@ impl DanmakuManager {
             room_id,
         };
         let (stop, stop_rx) = watch::channel(false);
-        self.set_status(
-            DanmakuStatus {
-                connection_id: Some(connection.connection_id.clone()),
-                room_id: Some(room_id),
-                state: DanmakuConnectionState::Connecting,
-                message: None,
-            },
-        );
+        self.set_status(DanmakuStatus {
+            connection_id: Some(connection.connection_id.clone()),
+            room_id: Some(room_id),
+            state: DanmakuConnectionState::Connecting,
+            message: None,
+        });
         let task_connection = connection.clone();
         let sink = Arc::clone(&self.sink);
         let task = self.runtime.spawn(async move {
@@ -237,11 +235,7 @@ fn emit_status(sink: &Arc<dyn EventSink>, status: DanmakuStatus) {
     sink.emit(DANMAKU_STATUS_EVENT, value);
 }
 
-fn emit_message(
-    sink: &Arc<dyn EventSink>,
-    connection: &DanmakuConnection,
-    parsed: ParsedMessage,
-) {
+fn emit_message(sink: &Arc<dyn EventSink>, connection: &DanmakuConnection, parsed: ParsedMessage) {
     let message = DanmakuMessage {
         connection_id: connection.connection_id.clone(),
         room_id: connection.room_id,

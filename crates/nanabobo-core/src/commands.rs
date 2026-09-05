@@ -1,6 +1,6 @@
 //! 应用命令核心:与 UI 框架无关的命令实现。
 //!
-//! 宿主层(Tauri command、NanaUI host API)只做参数解包与状态提取,
+//! 宿主层只做参数解包与状态提取,
 //! 业务语义、错误码与前端契约都定义在这里。
 
 use std::{
@@ -105,7 +105,7 @@ impl From<BilibiliError> for AppError {
                 code: ErrorCode::RequestLimited,
                 message: "请求过于频繁，请稍后再试。".to_owned(),
             },
-            BilibiliError::InvalidLoginUrl | BilibiliError::QrCode => Self {
+            BilibiliError::InvalidLoginUrl => Self {
                 code: ErrorCode::UpstreamUnavailable,
                 message: "登录服务返回了无法使用的结果，请重新尝试。".to_owned(),
             },
@@ -121,7 +121,7 @@ impl From<BilibiliError> for AppError {
 }
 
 pub async fn auth_qr_start(state: &AppState) -> Result<QrStartResponse, AppError> {
-    let (session, svg) = state.client.generate_qr().await.map_err(AppError::from)?;
+    let (session, payload) = state.client.generate_qr().await.map_err(AppError::from)?;
     let session_id = Uuid::new_v4().to_string();
     let expires_at = session.expires_at;
     state
@@ -131,7 +131,7 @@ pub async fn auth_qr_start(state: &AppState) -> Result<QrStartResponse, AppError
         .insert(session_id.clone(), session);
     Ok(QrStartResponse {
         session_id,
-        svg,
+        payload,
         expires_at,
     })
 }
