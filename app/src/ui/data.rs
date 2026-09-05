@@ -14,7 +14,24 @@ pub(super) fn mount_data(
     cx: &mut AppContext,
     parent: Entity<Stack>,
     session: &Session,
+    retained_tabs: &mut Option<Entity<Tabs>>,
 ) -> Result<(), FrameworkError> {
+    let selected = match session.stats.tab {
+        StatsTab::Trend => "trend",
+        StatsTab::History => "history",
+    };
+    // Preserve the retained tab options and roving focus when refreshing data.
+    // Replacing Tabs with Tabs::new also replaces its native option identities.
+    let mut tab_strip = retained_tabs
+        .map(|entity| cx.read(entity, Clone::clone))
+        .transpose()?
+        .unwrap_or_else(|| {
+            Tabs::new(selected).options([
+                TabOption::new("trend", "趋势").draggable(false),
+                TabOption::new("history", "历史").draggable(false),
+            ])
+        });
+    tab_strip.selected = Some(selected.into());
     let mut room_select = None;
     let mut tabs = None;
     let mut clear = None;
@@ -52,19 +69,7 @@ pub(super) fn mount_data(
                 Ok(())
             },
         )?;
-        tabs = Some(
-            ui.child(
-                "tabs",
-                Tabs::new(match session.stats.tab {
-                    StatsTab::Trend => "trend",
-                    StatsTab::History => "history",
-                })
-                .options([
-                    TabOption::new("trend", "趋势").draggable(false),
-                    TabOption::new("history", "历史").draggable(false),
-                ]),
-            )?,
-        );
+        tabs = Some(ui.child("tabs", tab_strip)?);
         if history.is_empty() {
             ui.child("empty-room", EmptyState::new("这个直播间还没有记录"))?;
             return Ok(());
@@ -158,6 +163,7 @@ pub(super) fn mount_data(
         }
         Ok(())
     })?;
+    *retained_tabs = tabs;
     if let Some(entity) = room_select {
         let inbox = session.inbox.clone();
         cx.on_keyed(

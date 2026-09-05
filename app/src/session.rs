@@ -258,6 +258,10 @@ impl Session {
     pub fn bind_dispatch(&self, fire: Arc<dyn Fn() + Send + Sync>) {
         self.inbox.bind(fire);
     }
+    #[cfg(all(test, feature = "native-acceptance"))]
+    pub(crate) fn input_probe_request_ids(&self) -> (u64, u64) {
+        (self.auth.request.revision, self.room.request.revision)
+    }
     pub fn authenticated(&self) -> bool {
         self.auth
             .account

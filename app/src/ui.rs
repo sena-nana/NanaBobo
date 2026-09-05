@@ -3,6 +3,8 @@ mod acceptance;
 mod data;
 mod desktop;
 mod feed;
+#[cfg(test)]
+mod input_tests;
 pub use desktop::DesktopDanmakuView;
 
 use crate::images::{ACCOUNT_AVATAR, ROOM_AVATAR};
@@ -26,6 +28,7 @@ pub struct Shell {
     content: Option<Entity<Stack>>,
     login: Option<(Entity<Dialog>, Entity<Stack>)>,
     clear: Option<(Entity<Dialog>, Entity<Stack>)>,
+    stats_tabs: Option<Entity<Tabs>>,
     last: Option<(Page, Revisions)>,
     connection: Option<nanabobo_core::models::DanmakuStatus>,
 }
@@ -77,6 +80,7 @@ impl Shell {
             content: None,
             login: None,
             clear: None,
+            stats_tabs: None,
             last: None,
             connection: None,
         };
@@ -107,6 +111,7 @@ impl Shell {
             self.sync_banner(cx, session)?;
         }
         if page_changed {
+            self.stats_tabs = None;
             self.header = None;
             self.toolbar = None;
             self.content = None;
@@ -139,7 +144,7 @@ impl Shell {
             }
             Page::Stats => {
                 if stats_changed {
-                    data::mount_data(cx, self.primary, session)?;
+                    data::mount_data(cx, self.primary, session, &mut self.stats_tabs)?;
                 }
             }
             Page::Settings => {
@@ -516,8 +521,7 @@ impl Shell {
         let mut overlays = Vec::new();
         if s.auth.open {
             if self.login.is_none() {
-                self.login =
-                    Some(self.dialog(cx, "登录 B 站", s.inbox.clone(), AppEvent::CloseLogin)?);
+                self.login = Some(self.dialog(cx, "登录 B 站")?);
             }
             let (dialog, body) = self.login.expect("login");
             let mut refresh = None;
@@ -571,12 +575,7 @@ impl Shell {
         }
         if let Some(id) = s.stats.confirm_clear {
             if self.clear.is_none() {
-                self.clear = Some(self.dialog(
-                    cx,
-                    "清理历史记录",
-                    s.inbox.clone(),
-                    AppEvent::CancelClearStats,
-                )?);
+                self.clear = Some(self.dialog(cx, "清理历史记录")?);
             }
             let (dialog, body) = self.clear.expect("clear");
             let mut actions = Vec::new();
@@ -611,7 +610,11 @@ impl Shell {
         let active = overlays.last().copied();
         if active.is_none() {
             if let Some(host) = cx.read(self.shell, |shell| shell.overlay)? {
-                cx.dismiss_overlay(Entity::<OverlayHost>::from_stable_id(host))?;
+                let host = Entity::<OverlayHost>::from_stable_id(host);
+                // Session already closed the dialog; dismissing its surface must
+                // not enqueue another close that could affect a later opening.
+                cx.on_keyed(host, "close", |_, _: &OverlayClosing, _| {})?;
+                cx.dismiss_overlay(host)?;
             }
         }
         cx.update_component(self.shell, |shell, _| shell.overlays = overlays)?;
@@ -620,10 +623,23 @@ impl Shell {
             let host = cx
                 .read(self.shell, |shell| shell.overlay)?
                 .expect("assembled overlay host");
-            cx.activate_overlay(
-                Entity::<OverlayHost>::from_stable_id(host),
-                Entity::<Dialog>::from_stable_id(active),
-            )?;
+            let host = Entity::<OverlayHost>::from_stable_id(host);
+            let event = if self
+                .login
+                .is_some_and(|(dialog, _)| dialog.stable_id() == active)
+            {
+                AppEvent::CloseLogin
+            } else {
+                AppEvent::CancelClearStats
+            };
+            let inbox = s.inbox.clone();
+            // Runtime emits closing on the host, with the dialog as its root.
+            cx.on_keyed(host, "close", move |_, closing: &OverlayClosing, _| {
+                if closing.root == active {
+                    inbox.push(event.clone());
+                }
+            })?;
+            cx.activate_overlay(host, Entity::<Dialog>::from_stable_id(active))?;
         }
         Ok(())
     }
@@ -631,21 +647,15 @@ impl Shell {
         &self,
         cx: &mut AppContext,
         title: &str,
-        inbox: Inbox,
-        event: AppEvent,
     ) -> Result<(Entity<Dialog>, Entity<Stack>), FrameworkError> {
-        let (dialog, body) = cx.build_detached(self.document_id, |ui| {
+        cx.build_detached(self.document_id, |ui| {
             let body = ui.leaf(Stack::column(12.0).max_width(440.0));
             let mut surface = Dialog::new(title);
             surface.slots.body = Some(body.stable_id());
             let dialog = ui.leaf(surface);
             ui.nest(dialog, |ui| ui.adopt(body));
             (dialog, body)
-        })?;
-        cx.on_keyed(dialog, "close", move |_, _: &OverlayClosing, _| {
-            inbox.push(event.clone())
-        })?;
-        Ok((dialog, body))
+        })
     }
 }
 pub(super) fn action<V: View>(

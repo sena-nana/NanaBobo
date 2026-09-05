@@ -11,6 +11,12 @@
 
 Core 通过 `CoreEvent` / `EventSink` 发送类型化事件；旧的 `nanabobo://danmaku/message` 与 `nanabobo://danmaku/status` 命名适配仍可用。宿主控制事件与有界弹幕队列分离，批量消费弹幕，避免消息积压阻塞用户操作。
 
+NanaUI 在应用输入钩子前通过 `RuntimeInputAdapter` 分发原生输入；旧 Vue 委托只用于 JS 桥接，不应重复分发。无障碍动作沿用 `RuntimeProgram::accessibility_action`，通过 `with_document_mut` 按窗口路由。业务回调统一经 `Inbox → Wake → update` 更新；应用快捷键须尊重 `InputDisposition::prevent_default`。
+
+弹窗关闭监听挂在 `OverlayHost`，按 `OverlayClosing.root` 区分登录与清理确认。Session 主动关闭时先停用该监听，再关闭原生浮层，避免产生影响下一次打开的重复关闭事件。
+
+统计刷新保留现有 Tabs 模型及实体。上游 `crates/nana-ui-runtime/src/tabs.rs` 尚未通过 `ComponentView::reconcile` 保留 `option_nodes`，重新传入 `Tabs::new` 会使 `framework/selection.rs::sync_tabs_options` 重建选项。复现：ArrowRight 切到历史后，应用更新清空焦点，ArrowLeft 无效。应用保留原控件模型避免此问题；通用协调行为的修复属于 NanaUI 上游。
+
 ## 概览、桌面弹幕与数据
 
 概览展示当前房间指标、最近 30 次采样趋势与桌面弹幕启动入口；统计页可查看所选房间完整历史。选房不启动弹幕，独立窗口创建成功才开始连接。窗口锁定在系统确认鼠标穿透成功后生效；主界面可以解锁或关闭。关闭桌面层停止连接并保留内存历史，关闭主窗口退出应用。房间输入与当前房间分别保存，失败的换房请求保留当前上下文。未实现的录制、回放和发送弹幕不提供操作入口。

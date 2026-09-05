@@ -3,6 +3,8 @@
 mod images;
 #[cfg(all(test, feature = "native-acceptance"))]
 mod native_acceptance;
+#[cfg(all(test, feature = "native-acceptance"))]
+mod native_input_acceptance;
 mod session;
 mod ui;
 
@@ -25,7 +27,11 @@ use crate::ui::{DesktopDanmakuView, Shell};
 
 #[cfg(all(test, feature = "native-acceptance"))]
 fn main() {
-    native_acceptance::run_probe();
+    if std::env::args().any(|arg| arg == "--input") {
+        native_input_acceptance::run_probe();
+    } else {
+        native_acceptance::run_probe();
+    }
 }
 
 #[cfg(not(all(test, feature = "native-acceptance")))]
@@ -309,6 +315,10 @@ impl RuntimeProgram for NanaBoboProgram {
         }
     }
 
+    // Scene dispatches native keyboard/IME input before this hook. Unlike the
+    // removed Vue delegate, we must not dispatch it again. Control callbacks
+    // enqueue Inbox -> Wake -> update; the default accessibility_action uses
+    // the same callbacks through the WindowId-routed RuntimeDocument.
     fn input_event(
         &mut self,
         id: WindowId,

@@ -33,6 +33,7 @@
 cargo test
 cargo test -p nanabobo-app ui::acceptance -- --ignored --test-threads=1
 cargo test -p nanabobo-app --features native-acceptance --test native_desktop --locked
+cargo test -p nanabobo-app --features native-acceptance --test native_desktop --locked -- --input
 cargo fmt -p nanabobo-app -p nanabobo-core -- --check
 cargo clippy -p nanabobo-app -p nanabobo-core --all-targets --no-deps -- -D warnings
 cargo build -p nanabobo-app
@@ -42,6 +43,8 @@ cargo build -p nanabobo-app
 GPU 验收通过真实 Runtime/Scene 绘制与指针、键盘输入检查概览、换房、数据、登录与清理浮层，以及独立桌面弹幕的透明背景、最小尺寸、字号和持续消息阅读位置。截图及可访问性树输出到 `target/ui-acceptance/`；包含 960×600、1200×800、浅深主题和 2× DPI。测试使用本地虚构房间数据，不接触真实凭据；截图必须目视检查，非空画面与语义树通过不能代替遮挡和可读性验收。
 
 `native_desktop` 使用主线程上的生产宿主和内存会话创建真实原生窗口，验证创建后连接、锁定与解锁反馈、关闭重开及退出释放。它通过显式测试 feature 启用，不访问真实账号或保存设置。鼠标穿透、置顶与透明合成还须通过 NanaUI 原生窗口探针及目标桌面实际点击验证，不能用离屏截图代替。
+
+`--input` 使用内存会话、合成输入和真实原生宿主，验证登录弹窗焦点、房间号编辑与提交、导航、统计标签、清理确认及无障碍动作。它按宿主顺序调用 Runtime 分发与应用钩子，业务状态仅由真实 `Inbox → Wake → update` 更新。Windows 按键转换、IME 和屏幕阅读器仍须在目标桌面实测。
 
 自动化测试使用内存凭据、受控完成事件和临时存储验证生命周期；无窗口场景可验证界面与输入，但不能代替真实 B 站服务、扫码和 Keyring 集成。跨窗口变更还需在最小尺寸与常用尺寸、浅色与深色下确认操作可达、滚动可用、弹层可关闭及内容无遮挡。
 

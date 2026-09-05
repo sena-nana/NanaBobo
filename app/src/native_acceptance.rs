@@ -7,6 +7,33 @@ use std::time::Duration;
 
 static COMPLETED: AtomicBool = AtomicBool::new(false);
 
+impl NanaBoboProgram {
+    pub(super) fn for_test(
+        session: Session,
+        context: &RuntimeProgramContext<Wake>,
+    ) -> Result<Self, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let dispatch = context.clone();
+        session.bind_dispatch(Arc::new(move || dispatch.dispatch(Wake)));
+        let mut document = RuntimeDocument::new(DocumentId::new(1).unwrap());
+        let shell = Shell::mount(&mut document, &session).map_err(|e| e.to_string())?;
+        Ok(Self {
+            document,
+            shell,
+            desktop: None,
+            session,
+            textures: HostTextureRegistry::new(),
+            decoded: HashMap::new(),
+            gpu_keep: HashMap::new(),
+            next_texture_id: 1,
+            _runtime: runtime,
+        })
+    }
+}
+
 struct NativeProbe {
     app: NanaBoboProgram,
     stage: u8,
@@ -19,10 +46,6 @@ impl RuntimeProgram for NativeProbe {
     type Error = String;
 
     fn initialize(context: &RuntimeProgramContext<Wake>) -> Result<(Self, Vec<Wake>), String> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
         let mut session = Session::for_test();
         session.auth.account = Some(AccountStatus {
             authenticated: true,
@@ -44,24 +67,11 @@ impl RuntimeProgram for NativeProbe {
             cover_url: None,
             fetched_at: 0,
         });
-        let dispatch = context.clone();
-        session.bind_dispatch(Arc::new(move || dispatch.dispatch(Wake)));
-        let mut document = RuntimeDocument::new(DocumentId::new(1).unwrap());
-        let shell = Shell::mount(&mut document, &session).map_err(|e| e.to_string())?;
-        session.inbox.push(AppEvent::OpenDesktopDanmaku);
+        let app = NanaBoboProgram::for_test(session, context)?;
+        app.session.inbox.push(AppEvent::OpenDesktopDanmaku);
         Ok((
             Self {
-                app: NanaBoboProgram {
-                    document,
-                    shell,
-                    desktop: None,
-                    session,
-                    textures: HostTextureRegistry::new(),
-                    decoded: HashMap::new(),
-                    gpu_keep: HashMap::new(),
-                    next_texture_id: 1,
-                    _runtime: runtime,
-                },
+                app,
                 stage: 0,
                 first: None,
                 deadline: Instant::now() + Duration::from_secs(60),
