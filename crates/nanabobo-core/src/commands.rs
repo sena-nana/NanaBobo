@@ -23,10 +23,23 @@ use crate::{
 };
 
 pub struct AppState {
-    pub client: BilibiliClient,
-    pub credentials: Arc<dyn CredentialStore>,
-    pub qr_sessions: Mutex<HashMap<String, QrSession>>,
-    pub danmaku: Arc<DanmakuManager>,
+    client: BilibiliClient,
+    credentials: Arc<dyn CredentialStore>,
+    auth: Mutex<AuthLifecycle>,
+    auth_poll: tokio::sync::Mutex<()>,
+    danmaku: Arc<DanmakuManager>,
+}
+
+#[derive(Default)]
+struct AuthLifecycle {
+    generation: u64,
+    sessions: HashMap<String, QrSession>,
+}
+impl AuthLifecycle {
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.sessions.clear();
+    }
 }
 
 impl AppState {
@@ -39,7 +52,8 @@ impl AppState {
         Self {
             client,
             credentials,
-            qr_sessions: Mutex::new(HashMap::new()),
+            auth: Mutex::new(AuthLifecycle::default()),
+            auth_poll: tokio::sync::Mutex::new(()),
             danmaku: Arc::new(DanmakuManager::new(runtime, sink)),
         }
     }
@@ -121,14 +135,25 @@ impl From<BilibiliError> for AppError {
 }
 
 pub async fn auth_qr_start(state: &AppState) -> Result<QrStartResponse, AppError> {
+    let generation = {
+        let mut auth = state
+            .auth
+            .lock()
+            .map_err(|_| AppError::credential_store())?;
+        auth.invalidate();
+        auth.generation
+    };
     let (session, payload) = state.client.generate_qr().await.map_err(AppError::from)?;
     let session_id = Uuid::new_v4().to_string();
     let expires_at = session.expires_at;
-    state
-        .qr_sessions
+    let mut auth = state
+        .auth
         .lock()
-        .map_err(|_| AppError::credential_store())?
-        .insert(session_id.clone(), session);
+        .map_err(|_| AppError::credential_store())?;
+    if auth.generation != generation {
+        return Err(AppError::qr_expired());
+    }
+    auth.sessions.insert(session_id.clone(), session);
     Ok(QrStartResponse {
         session_id,
         payload,
@@ -146,24 +171,43 @@ pub async fn auth_qr_poll(
             message: "登录会话无效，请重新生成二维码。".to_owned(),
         });
     }
-    let session = state
-        .qr_sessions
-        .lock()
-        .map_err(|_| AppError::credential_store())?
-        .get(&session_id)
-        .cloned()
-        .ok_or_else(AppError::qr_expired)?;
+    let _poll = state.auth_poll.try_lock().map_err(|_| AppError {
+        code: ErrorCode::RequestLimited,
+        message: "正在确认扫码结果，请稍候。".to_owned(),
+    })?;
+    let (generation, session) = {
+        let auth = state
+            .auth
+            .lock()
+            .map_err(|_| AppError::credential_store())?;
+        (
+            auth.generation,
+            auth.sessions
+                .get(&session_id)
+                .cloned()
+                .ok_or_else(AppError::qr_expired)?,
+        )
+    };
     if session.expires_at <= now_seconds() {
         remove_session(state, &session_id)?;
         return Err(AppError::qr_expired());
     }
 
-    match state
+    let result = state
         .client
         .poll_qr(&session.qrcode_key)
         .await
-        .map_err(AppError::from)?
+        .map_err(AppError::from)?;
     {
+        let auth = state
+            .auth
+            .lock()
+            .map_err(|_| AppError::credential_store())?;
+        if auth.generation != generation || !auth.sessions.contains_key(&session_id) {
+            return Err(AppError::qr_expired());
+        }
+    }
+    match result {
         QrPollResult::Pending => Ok(AuthPollResponse::Pending),
         QrPollResult::Scanned => Ok(AuthPollResponse::Scanned),
         QrPollResult::Expired => {
@@ -171,7 +215,6 @@ pub async fn auth_qr_poll(
             Ok(AuthPollResponse::Expired)
         }
         QrPollResult::Success { cookie } => {
-            state.credentials.save(&cookie)?;
             let account = state
                 .client
                 .account_status(&cookie)
@@ -181,14 +224,39 @@ pub async fn auth_qr_poll(
                     code: ErrorCode::NotAuthenticated,
                     message: "扫码成功，但账号状态仍未确认。".to_owned(),
                 })?;
-            remove_session(state, &session_id)?;
+            commit_login(state, generation, &session_id, &cookie)?;
             Ok(AuthPollResponse::Success { account })
         }
     }
 }
 
+fn commit_login(
+    state: &AppState,
+    generation: u64,
+    session_id: &str,
+    cookie: &str,
+) -> Result<(), AppError> {
+    let mut auth = state
+        .auth
+        .lock()
+        .map_err(|_| AppError::credential_store())?;
+    if auth.generation != generation || !auth.sessions.contains_key(session_id) {
+        return Err(AppError::qr_expired());
+    }
+    state.credentials.save(cookie)?;
+    auth.invalidate();
+    Ok(())
+}
+
 pub async fn auth_status(state: &AppState) -> Result<AccountStatus, AppError> {
-    let Some(cookie) = state.credentials.load()? else {
+    let (generation, cookie) = {
+        let auth = state
+            .auth
+            .lock()
+            .map_err(|_| AppError::credential_store())?;
+        (auth.generation, state.credentials.load()?)
+    };
+    let Some(cookie) = cookie else {
         return Ok(AccountStatus {
             authenticated: false,
             account: None,
@@ -199,21 +267,46 @@ pub async fn auth_status(state: &AppState) -> Result<AccountStatus, AppError> {
         .account_status(&cookie)
         .await
         .map_err(AppError::from)?;
+    if state
+        .auth
+        .lock()
+        .map_err(|_| AppError::credential_store())?
+        .generation
+        != generation
+    {
+        return Err(AppError {
+            code: ErrorCode::NotAuthenticated,
+            message: "登录状态已更新，请重试。".into(),
+        });
+    }
     Ok(AccountStatus {
         authenticated: account.is_some(),
         account,
     })
 }
 
-pub fn auth_logout(state: &AppState) -> Result<(), AppError> {
-    state.danmaku.stop(None);
-    state.credentials.clear()?;
+pub fn auth_qr_cancel(state: &AppState) -> Result<(), AppError> {
     state
-        .qr_sessions
+        .auth
         .lock()
         .map_err(|_| AppError::credential_store())?
-        .clear();
+        .invalidate();
     Ok(())
+}
+
+pub fn auth_logout(state: &AppState) -> Result<(), AppError> {
+    let mut auth = state
+        .auth
+        .lock()
+        .map_err(|_| AppError::credential_store())?;
+    auth.invalidate();
+    state.credentials.clear()?;
+    state.danmaku.stop(None);
+    Ok(())
+}
+
+pub async fn fetch_image(state: &AppState, url: &str) -> Result<Vec<u8>, AppError> {
+    state.client.fetch_bytes(url).await.map_err(AppError::from)
 }
 
 pub fn danmaku_start(state: &AppState, room_id: u64) -> Result<DanmakuConnection, AppError> {
@@ -263,9 +356,10 @@ pub async fn room_get_info(state: &AppState, room_id: String) -> Result<RoomInfo
 
 fn remove_session(state: &AppState, session_id: &str) -> Result<(), AppError> {
     state
-        .qr_sessions
+        .auth
         .lock()
         .map_err(|_| AppError::credential_store())?
+        .sessions
         .remove(session_id);
     Ok(())
 }
@@ -285,5 +379,58 @@ mod tests {
         let error = super::AppError::from(crate::bilibili::BilibiliError::HttpStatus(429));
         assert_eq!(error.code, ErrorCode::RequestLimited);
         assert!(!error.message.contains("429"));
+    }
+    fn fixture() -> (tokio::runtime::Runtime, super::AppState) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let state = super::AppState::new(
+            crate::bilibili::BilibiliClient::new().unwrap(),
+            std::sync::Arc::new(crate::credential_store::MemoryCredentialStore::default()),
+            runtime.handle().clone(),
+            std::sync::Arc::new(crate::events::NullEventSink),
+        );
+        (runtime, state)
+    }
+    fn pending(state: &super::AppState) -> u64 {
+        let mut auth = state.auth.lock().unwrap();
+        auth.sessions.insert(
+            "active".into(),
+            crate::bilibili::QrSession {
+                qrcode_key: "test".into(),
+                expires_at: u64::MAX,
+            },
+        );
+        auth.generation
+    }
+    #[test]
+    fn cancelled_or_logged_out_login_cannot_restore_credentials() {
+        let (_runtime, state) = fixture();
+        for logout in [false, true] {
+            let generation = pending(&state);
+            if logout {
+                super::auth_logout(&state).unwrap();
+            } else {
+                super::auth_qr_cancel(&state).unwrap();
+            }
+            assert_eq!(
+                super::commit_login(&state, generation, "active", "test")
+                    .unwrap_err()
+                    .code,
+                ErrorCode::QrExpired
+            );
+            assert!(state.credentials.load().unwrap().is_none());
+        }
+    }
+    #[test]
+    fn successful_login_consumes_session_and_logout_clears_it() {
+        let (_runtime, state) = fixture();
+        let generation = pending(&state);
+        super::commit_login(&state, generation, "active", "test").unwrap();
+        assert_eq!(state.credentials.load().unwrap().as_deref(), Some("test"));
+        assert!(super::commit_login(&state, generation, "active", "late").is_err());
+        super::auth_logout(&state).unwrap();
+        assert!(state.credentials.load().unwrap().is_none());
     }
 }

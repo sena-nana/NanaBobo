@@ -1,804 +1,482 @@
-use std::collections::{HashSet, VecDeque};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+mod auth;
+mod danmaku;
+mod desktop;
+mod inbox;
+mod resources;
+mod room;
+mod stats;
+pub mod storage;
 
-use nanabobo_core::bilibili::{BilibiliClient, DANMAKU_MESSAGE_EVENT, DANMAKU_STATUS_EVENT};
+pub use auth::{AuthState, QrPhase};
+pub use danmaku::DanmakuState;
+pub use desktop::{
+    DesktopDanmakuPhase, DesktopDanmakuSettings, DesktopDanmakuState, DesktopEffect,
+};
+pub use inbox::Inbox;
+use nana_ui::{AppearanceEvent, AppearanceSettings, ThemeMode};
+use nanabobo_core::bilibili::BilibiliClient;
 use nanabobo_core::commands::{self, AppError, AppState};
 use nanabobo_core::credential_store::{CredentialStore, KeyringCredentialStore};
-use nanabobo_core::events::EventSink;
 use nanabobo_core::models::{
-    AccountStatus, AuthPollResponse, DanmakuMessage, DanmakuStatus, QrStartResponse, RoomInfo,
+    AccountStatus, AuthPollResponse, DanmakuMessage, DanmakuStatus, LiveStatus, QrStartResponse,
+    RoomInfo,
 };
-use nana_ui::{AppearanceEvent, AppearanceSettings, ThemeMode};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+pub use resources::ImageChange;
+use resources::Resources;
+pub use room::RoomState;
+pub use stats::{timestamp, Snapshot, StatsState, StatsTab};
+use std::sync::Arc;
+use std::time::Instant;
+use storage::{Storage, StoredState};
 
-const CREDENTIAL_SERVICE: &str = "com.senanana.nanabobo";
-const STORAGE_FILE: &str = "nanabobo-storage.json";
-const MAX_SNAPSHOTS_PER_ROOM: usize = 2_000;
-const MAX_CHART_POINTS: usize = 60;
-const MAX_DANMAKU: usize = 1_000;
-const QR_POLL: Duration = Duration::from_millis(1_500);
-const STATS_POLL: Duration = Duration::from_secs(60);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Wake;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
-    Home,
-    Assistant,
+    Workbench,
     Stats,
     Settings,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatsTab {
-    Trend,
-    History,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QrPhase {
-    Idle,
-    Pending,
-    Scanned,
-    Expired,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Snapshot {
-    pub room_id: u64,
-    pub captured_at: u64,
-    pub viewer_count: u64,
-    pub follower_count: Option<u64>,
-    pub live_status: String,
-}
-
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Navigate(Page),
     OpenLogin,
     CloseLogin,
     StartQr,
-    PollQr,
     Logout,
+    EditRoom,
+    CancelEditRoom,
     RoomIdChanged(String),
     QueryRoom,
+    RefreshRoom,
     DisconnectRoom,
-    StartDanmaku,
-    StopDanmaku,
+    OpenDesktopDanmaku,
+    CloseDesktopDanmaku,
+    AdjustDesktopDanmaku,
+    LockDesktopDanmaku,
+    DesktopFontSize(f32),
+    DesktopBackgroundOpacity(f32),
+    DesktopOpened {
+        generation: u64,
+    },
+    DesktopOpenFailed {
+        generation: u64,
+    },
+    DesktopClosed {
+        generation: u64,
+    },
+    DesktopPassthroughResult {
+        generation: u64,
+        request: u64,
+        enabled: bool,
+        success: bool,
+    },
+    DesktopGeometry {
+        generation: u64,
+        width: f32,
+        height: f32,
+        position: [f32; 2],
+    },
+    FollowLatest,
+    Reading {
+        following: bool,
+        offset: f32,
+    },
     SelectStatsTab(StatsTab),
+    SelectHistoryRoom(u64),
     AskClearStats,
     CancelClearStats,
     ClearStats,
-    TickStats,
     Appearance(AppearanceEvent),
-    AuthStatus(Result<AccountStatus, AppError>),
-    QrStarted(Result<QrStartResponse, AppError>),
-    QrPolled(Result<AuthPollResponse, AppError>),
+    RetryStore,
+    AuthStatus(u64, Result<AccountStatus, AppError>),
+    QrStarted(u64, Result<QrStartResponse, AppError>),
+    QrPolled(u64, Result<AuthPollResponse, AppError>),
     RoomLoaded {
-        preserve: bool,
+        request: u64,
+        refresh: bool,
         result: Result<RoomInfo, AppError>,
     },
     DanmakuStatus(DanmakuStatus),
     DanmakuMessage(DanmakuMessage),
-    ImageReady(crate::images::DecodedImage),
+    ImageLoaded {
+        slot: String,
+        revision: u64,
+        image: Option<crate::images::DecodedImage>,
+    },
+    Stored {
+        revision: u64,
+        result: Result<(), String>,
+    },
 }
-
-#[derive(Clone)]
-pub struct Inbox(Arc<Mutex<VecDeque<AppEvent>>>);
-
-impl Inbox {
-    pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(VecDeque::new())))
-    }
-
-    pub fn push(&self, event: AppEvent) {
-        if let Ok(mut queue) = self.0.lock() {
-            queue.push_back(event);
-        }
-    }
-
-    pub fn drain(&self) -> Vec<AppEvent> {
-        self.0
-            .lock()
-            .map(|mut queue| queue.drain(..).collect())
-            .unwrap_or_default()
-    }
+#[derive(Debug, Default)]
+pub enum Operation {
+    #[default]
+    Idle,
+    Loading,
+    Failed(String),
 }
-
-struct UiSink {
-    inbox: Inbox,
-    dispatch: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
-}
-
-impl EventSink for UiSink {
-    fn emit(&self, event: &str, payload: Value) {
-        match event {
-            DANMAKU_STATUS_EVENT => {
-                if let Ok(status) = serde_json::from_value::<DanmakuStatus>(payload) {
-                    self.inbox.push(AppEvent::DanmakuStatus(status));
-                    wake(&self.dispatch);
-                }
-            }
-            DANMAKU_MESSAGE_EVENT => {
-                if let Ok(message) = serde_json::from_value::<DanmakuMessage>(payload) {
-                    self.inbox.push(AppEvent::DanmakuMessage(message));
-                    wake(&self.dispatch);
-                }
-            }
-            _ => {}
+impl Operation {
+    pub fn loading(&self) -> bool {
+        matches!(self, Self::Loading)
+    }
+    pub fn error(&self) -> Option<&str> {
+        if let Self::Failed(e) = self {
+            Some(e)
+        } else {
+            None
         }
     }
 }
-
-fn wake(dispatch: &Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>) {
-    if let Ok(slot) = dispatch.lock() {
-        if let Some(fire) = slot.as_ref() {
-            fire();
+#[derive(Default)]
+struct Request {
+    revision: u64,
+    state: Operation,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+impl Request {
+    fn cancel(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
         }
+        self.revision = self.revision.wrapping_add(1);
+        self.state = Operation::Idle;
+    }
+    fn begin(&mut self) -> u64 {
+        self.cancel();
+        self.state = Operation::Loading;
+        self.revision
+    }
+    fn finish(&mut self, revision: u64) -> bool {
+        if revision != self.revision || !self.state.loading() {
+            return false;
+        }
+        self.task = None;
+        self.state = Operation::Idle;
+        true
     }
 }
-
-#[derive(Serialize, Deserialize, Default)]
-struct StoredState {
-    room_id: String,
-    theme: String,
-    snapshots: Vec<Snapshot>,
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.cancel();
+    }
 }
-
+#[derive(Default, Clone, Copy)]
+pub struct Revisions {
+    pub shell: u64,
+    pub room: u64,
+    pub messages: u64,
+    pub stats: u64,
+    pub overlay: u64,
+    pub desktop: u64,
+}
 pub struct Session {
     pub inbox: Inbox,
     pub page: Page,
-    pub login_open: bool,
-    pub confirm_clear: bool,
-    pub stats_tab: StatsTab,
     pub theme: ThemeMode,
     pub appearance: AppearanceSettings,
-    pub account: Option<AccountStatus>,
-    pub qr: Option<QrStartResponse>,
-    pub qr_phase: QrPhase,
-    pub room_id: String,
-    pub room: Option<RoomInfo>,
-    pub danmaku: DanmakuStatus,
-    pub messages: Vec<DanmakuMessage>,
-    pub snapshots: Vec<Snapshot>,
-    pub account_error: Option<String>,
-    pub room_error: Option<String>,
-    pub danmaku_error: Option<String>,
-    pub account_loading: bool,
-    pub qr_polling: bool,
-    pub room_loading: bool,
-    pub danmaku_loading: bool,
-    pub restore_attempted: bool,
-    ready_images: HashSet<String>,
-    pending_images: Arc<Mutex<Vec<crate::images::DecodedImage>>>,
-    requested_images: HashSet<String>,
+    pub auth: AuthState,
+    pub room: RoomState,
+    pub danmaku: DanmakuState,
+    pub desktop: DesktopDanmakuState,
+    pub stats: StatsState,
+    pub revisions: Revisions,
+    pub storage_error: Option<String>,
+    resources: Resources,
     core: Arc<AppState>,
     runtime: tokio::runtime::Handle,
-    dispatch: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
-    next_qr_poll: Option<Instant>,
-    next_stats: Option<Instant>,
+    storage: Option<Storage>,
+    storage_revision: u64,
+    #[cfg(test)]
+    test_mode: bool,
 }
-
 impl Session {
     pub fn new(runtime: tokio::runtime::Handle) -> Result<Self, String> {
-        Self::with_credentials(
+        let loaded = storage::load();
+        let mut s = Self::with_credentials(
             runtime,
-            Arc::new(KeyringCredentialStore::new(CREDENTIAL_SERVICE)),
-            load_store(),
-            true,
-        )
+            Arc::new(KeyringCredentialStore::new("com.senanana.nanabobo")),
+            loaded.state,
+        )?;
+        s.storage_error = loaded.error;
+        s.storage = Some(Storage::new(loaded.path, loaded.blocked, s.inbox.clone()));
+        Ok(s)
     }
-
-    #[cfg(test)]
-    pub fn for_test() -> Self {
-        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-        let handle = RUNTIME
-            .get_or_init(|| {
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .expect("test runtime")
-            })
-            .handle()
-            .clone();
-        Self::with_credentials(
-            handle,
-            Arc::new(nanabobo_core::credential_store::MemoryCredentialStore::default()),
-            StoredState::default(),
-            false,
-        )
-        .expect("test session")
-    }
-
     fn with_credentials(
         runtime: tokio::runtime::Handle,
         credentials: Arc<dyn CredentialStore>,
         stored: StoredState,
-        loading: bool,
     ) -> Result<Self, String> {
         let inbox = Inbox::new();
-        let dispatch = Arc::new(Mutex::new(None));
         let client = BilibiliClient::new().map_err(|_| "无法初始化 B 站客户端".to_owned())?;
-        let sink = Arc::new(UiSink {
-            inbox: inbox.clone(),
-            dispatch: Arc::clone(&dispatch),
-        });
         let core = Arc::new(AppState::new(
             client,
             credentials,
             runtime.clone(),
-            sink,
+            Arc::new(inbox.clone()),
         ));
+        let (theme, appearance) = stored.appearance_settings();
         Ok(Self {
             inbox,
-            page: Page::Home,
-            login_open: false,
-            confirm_clear: false,
-            stats_tab: StatsTab::Trend,
-            theme: if stored.theme == "light" {
-                ThemeMode::Light
-            } else {
-                ThemeMode::Dark
-            },
-            appearance: AppearanceSettings::default(),
-            account: None,
-            qr: None,
-            qr_phase: QrPhase::Idle,
-            room_id: stored.room_id,
-            room: None,
-            danmaku: commands::danmaku_status(&core).unwrap_or(DanmakuStatus {
-                connection_id: None,
-                room_id: None,
-                state: nanabobo_core::models::DanmakuConnectionState::Idle,
-                message: None,
-            }),
-            messages: Vec::new(),
-            snapshots: stored.snapshots,
-            account_error: None,
-            room_error: None,
-            danmaku_error: None,
-            account_loading: loading,
-            qr_polling: false,
-            room_loading: false,
-            danmaku_loading: false,
-            restore_attempted: false,
-            ready_images: HashSet::new(),
-            pending_images: Arc::new(Mutex::new(Vec::new())),
-            requested_images: HashSet::new(),
+            page: Page::Workbench,
+            theme,
+            appearance,
+            auth: AuthState::default(),
+            room: RoomState::new(stored.room_id),
+            danmaku: DanmakuState::default(),
+            desktop: DesktopDanmakuState::new(stored.desktop),
+            stats: StatsState::new(stored.snapshots),
+            revisions: Revisions::default(),
+            storage_error: None,
+            resources: Resources::default(),
             core,
             runtime,
-            dispatch,
-            next_qr_poll: None,
-            next_stats: None,
+            storage: None,
+            storage_revision: 0,
+            #[cfg(test)]
+            test_mode: false,
         })
     }
-
-    pub fn take_pending_images(&self) -> Vec<crate::images::DecodedImage> {
-        self.pending_images
-            .lock()
-            .map(|mut pending| pending.drain(..).collect())
-            .unwrap_or_default()
-    }
-
-    pub fn has_image(&self, slot: &str) -> bool {
-        self.ready_images.contains(slot)
-    }
-
-    fn request_image(&mut self, slot: &'static str, url: Option<&str>) {
-        let Some(url) = url.map(str::trim).filter(|url| !url.is_empty()) else {
-            self.ready_images.remove(slot);
-            return;
-        };
-        let key = format!("{slot}:{url}");
-        if !self.requested_images.insert(key) {
-            return;
-        }
-        let core = Arc::clone(&self.core);
-        let inbox = self.inbox.clone();
-        let dispatch = Arc::clone(&self.dispatch);
-        let url = url.to_owned();
-        self.runtime.spawn(async move {
-            if let Ok(bytes) = core.client.fetch_bytes(&url).await {
-                if let Some(decoded) = crate::images::decode(slot, &bytes) {
-                    inbox.push(AppEvent::ImageReady(decoded));
-                    wake(&dispatch);
-                }
-            }
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        let runtime = RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
         });
+        let mut s = Self::with_credentials(
+            runtime.handle().clone(),
+            Arc::new(nanabobo_core::credential_store::MemoryCredentialStore::default()),
+            StoredState::default(),
+        )
+        .expect("session");
+        s.test_mode = true;
+        s
     }
-
     pub fn bind_dispatch(&self, fire: Arc<dyn Fn() + Send + Sync>) {
-        if let Ok(mut slot) = self.dispatch.lock() {
-            *slot = Some(fire);
-        }
+        self.inbox.bind(fire);
     }
-
     pub fn authenticated(&self) -> bool {
-        self.account
+        self.auth
+            .account
             .as_ref()
-            .is_some_and(|status| status.authenticated && status.account.is_some())
+            .is_some_and(|s| s.authenticated && s.account.is_some())
     }
-
     pub fn account_name(&self) -> Option<&str> {
-        self.account
+        self.auth
+            .account
+            .as_ref()?
+            .account
             .as_ref()
-            .and_then(|status| status.account.as_ref())
-            .map(|account| account.username.as_str())
+            .map(|a| a.username.as_str())
     }
-
-    pub fn current_snapshots(&self) -> Vec<&Snapshot> {
-        let Some(room_id) = self.room.as_ref().map(|room| room.room_id) else {
-            return Vec::new();
-        };
-        self.snapshots
-            .iter()
-            .filter(|snapshot| snapshot.room_id == room_id)
-            .collect()
+    pub fn has_image(&self, slot: &str) -> bool {
+        self.resources.ready(slot)
     }
-
-    pub fn viewer_series(&self) -> Vec<f64> {
-        series(self, |snapshot| snapshot.viewer_count as f64)
+    pub fn take_pending_images(&mut self) -> Vec<ImageChange> {
+        std::mem::take(&mut self.resources.pending)
     }
-
-    pub fn follower_series(&self) -> Vec<f64> {
-        series(self, |snapshot| snapshot.follower_count.unwrap_or(0) as f64)
-    }
-
     pub fn next_wakeup(&self) -> Option<Instant> {
-        [self.next_qr_poll, self.next_stats]
+        [self.auth.next_poll, self.room.next_refresh]
             .into_iter()
             .flatten()
             .min()
     }
-
+    pub fn advance(&mut self, now: Instant) {
+        if self.auth.next_poll.is_some_and(|d| d <= now) {
+            self.auth.next_poll = None;
+            self.poll_qr();
+        }
+        if self.room.next_refresh.is_some_and(|d| d <= now) {
+            self.room.next_refresh = None;
+            self.query_room(true);
+        }
+    }
     pub fn apply(&mut self, event: AppEvent) {
         match event {
             AppEvent::Navigate(page) => {
                 self.page = page;
-                self.confirm_clear = false;
+                self.stats.confirm_clear = None;
+                self.revisions.shell += 1;
+                self.revisions.overlay += 1;
             }
             AppEvent::OpenLogin => {
-                self.login_open = true;
-                if self.qr.is_none() {
+                self.auth.open = true;
+                if self.auth.qr.is_none() && !self.auth.request.state.loading() {
                     self.start_qr();
                 }
+                self.revisions.overlay += 1;
             }
             AppEvent::CloseLogin => {
-                self.login_open = false;
-                if !self.authenticated() {
-                    self.cancel_qr();
-                }
+                self.auth.open = false;
+                self.cancel_qr();
+                self.revisions.overlay += 1;
             }
             AppEvent::StartQr => self.start_qr(),
-            AppEvent::PollQr => self.poll_qr(),
             AppEvent::Logout => self.logout(),
-            AppEvent::RoomIdChanged(value) => self.room_id = value,
-            AppEvent::QueryRoom => self.query_room(false),
-            AppEvent::DisconnectRoom => self.disconnect_room(),
-            AppEvent::StartDanmaku => self.start_danmaku(),
-            AppEvent::StopDanmaku => self.stop_danmaku(),
-            AppEvent::SelectStatsTab(tab) => self.stats_tab = tab,
-            AppEvent::AskClearStats => self.confirm_clear = true,
-            AppEvent::CancelClearStats => self.confirm_clear = false,
-            AppEvent::ClearStats => self.clear_stats(),
-            AppEvent::TickStats => {
-                if self.room.is_some() {
-                    self.query_room(true);
+            AppEvent::EditRoom => {
+                self.room.editing = true;
+                self.room.input = self
+                    .room
+                    .info
+                    .as_ref()
+                    .map(|r| r.room_id.to_string())
+                    .unwrap_or_else(|| self.room.remembered.clone());
+                self.revisions.room += 1;
+            }
+            AppEvent::CancelEditRoom => {
+                self.room.editing = false;
+                self.room.request.cancel();
+                self.room.schedule_refresh();
+                self.revisions.room += 1;
+            }
+            AppEvent::RoomIdChanged(value) => {
+                self.room.input = value;
+                if !self.room.request.state.loading() {
+                    if self.room.request.state.error().is_some() {
+                        self.revisions.room += 1;
+                    }
+                    self.room.request.state = Operation::Idle;
                 }
             }
+            AppEvent::QueryRoom => self.query_room(false),
+            AppEvent::RefreshRoom => self.query_room(true),
+            AppEvent::DisconnectRoom => self.disconnect_room(),
+            AppEvent::OpenDesktopDanmaku => self.open_desktop(),
+            AppEvent::CloseDesktopDanmaku => self.close_desktop(),
+            AppEvent::AdjustDesktopDanmaku => self.adjust_desktop(),
+            AppEvent::LockDesktopDanmaku => self.set_desktop_passthrough(true),
+            AppEvent::DesktopFontSize(value) => self.set_desktop_font_size(value),
+            AppEvent::DesktopBackgroundOpacity(value) => self.set_desktop_opacity(value),
+            AppEvent::DesktopOpened { generation } => self.desktop_opened(generation),
+            AppEvent::DesktopOpenFailed { generation } => self.desktop_open_failed(generation),
+            AppEvent::DesktopClosed { generation } => self.desktop_closed(generation),
+            AppEvent::DesktopPassthroughResult {
+                generation,
+                request,
+                enabled,
+                success,
+            } => self.desktop_passthrough_result(generation, request, enabled, success),
+            AppEvent::DesktopGeometry {
+                generation,
+                width,
+                height,
+                position,
+            } => self.desktop_geometry(generation, width, height, position),
+            AppEvent::FollowLatest => {
+                self.danmaku.following = true;
+                self.danmaku.unread = 0;
+                self.revisions.messages += 1;
+            }
+            AppEvent::Reading { following, offset } => {
+                if self.desktop.phase == DesktopDanmakuPhase::Locked {
+                    return;
+                }
+                self.danmaku.following = following;
+                self.danmaku.scroll_offset = offset;
+                if following {
+                    self.danmaku.unread = 0;
+                }
+                self.revisions.messages += 1;
+            }
+            AppEvent::SelectStatsTab(tab) => {
+                self.stats.tab = tab;
+                self.revisions.stats += 1;
+            }
+            AppEvent::SelectHistoryRoom(id) => {
+                self.stats.selected_room = Some(id);
+                self.stats.confirm_clear = None;
+                self.revisions.stats += 1;
+            }
+            AppEvent::AskClearStats => {
+                self.stats.confirm_clear = self.stats.selected_room;
+                self.revisions.overlay += 1;
+            }
+            AppEvent::CancelClearStats => {
+                self.stats.confirm_clear = None;
+                self.revisions.overlay += 1;
+            }
+            AppEvent::ClearStats => self.clear_stats(),
             AppEvent::Appearance(event) => {
                 nana_ui::runtime::apply_appearance_event(
                     &mut self.theme,
                     &mut self.appearance,
                     event,
                 );
-                self.persist();
+                self.revisions.shell += 1;
+                self.persist(false);
             }
-            AppEvent::AuthStatus(result) => self.on_auth_status(result),
-            AppEvent::QrStarted(result) => self.on_qr_started(result),
-            AppEvent::QrPolled(result) => self.on_qr_polled(result),
-            AppEvent::RoomLoaded { preserve, result } => self.on_room_loaded(preserve, result),
-            AppEvent::DanmakuStatus(status) => {
-                self.danmaku = status;
-                self.danmaku_loading = false;
-            }
-            AppEvent::DanmakuMessage(message) => {
-                self.messages.push(message);
-                if self.messages.len() > MAX_DANMAKU {
-                    let extra = self.messages.len() - MAX_DANMAKU;
-                    self.messages.drain(..extra);
+            AppEvent::RetryStore => self.persist(true),
+            AppEvent::AuthStatus(id, result) => self.on_auth_status(id, result),
+            AppEvent::QrStarted(id, result) => self.on_qr_started(id, result),
+            AppEvent::QrPolled(id, result) => self.on_qr_polled(id, result),
+            AppEvent::RoomLoaded {
+                request,
+                refresh,
+                result,
+            } => self.on_room_loaded(request, refresh, result),
+            AppEvent::DanmakuStatus(status) => self.on_danmaku_status(status),
+            AppEvent::DanmakuMessage(message) => self.on_danmaku_message(message),
+            AppEvent::ImageLoaded {
+                slot,
+                revision,
+                image,
+            } => {
+                if self.resources.complete(&slot, revision, image) {
+                    self.revisions.room += 1;
+                    self.revisions.shell += 1;
                 }
             }
-            AppEvent::ImageReady(image) => {
-                self.ready_images.insert(image.slot.clone());
-                if let Ok(mut pending) = self.pending_images.lock() {
-                    pending.push(image);
-                }
-            }
-        }
-    }
-
-    pub fn load_account(&self) {
-        let core = Arc::clone(&self.core);
-        let inbox = self.inbox.clone();
-        let dispatch = Arc::clone(&self.dispatch);
-        self.runtime.spawn(async move {
-            inbox.push(AppEvent::AuthStatus(commands::auth_status(&core).await));
-            wake(&dispatch);
-        });
-    }
-
-    fn start_qr(&mut self) {
-        self.account_error = None;
-        self.account_loading = true;
-        self.qr_phase = QrPhase::Idle;
-        self.next_qr_poll = None;
-        let core = Arc::clone(&self.core);
-        let inbox = self.inbox.clone();
-        let dispatch = Arc::clone(&self.dispatch);
-        self.runtime.spawn(async move {
-            inbox.push(AppEvent::QrStarted(commands::auth_qr_start(&core).await));
-            wake(&dispatch);
-        });
-    }
-
-    fn poll_qr(&mut self) {
-        let Some(session_id) = self.qr.as_ref().map(|qr| qr.session_id.clone()) else {
-            return;
-        };
-        if self.qr_polling {
-            return;
-        }
-        self.qr_polling = true;
-        let core = Arc::clone(&self.core);
-        let inbox = self.inbox.clone();
-        let dispatch = Arc::clone(&self.dispatch);
-        self.runtime.spawn(async move {
-            inbox.push(AppEvent::QrPolled(
-                commands::auth_qr_poll(&core, session_id).await,
-            ));
-            wake(&dispatch);
-        });
-    }
-
-    fn cancel_qr(&mut self) {
-        self.qr = None;
-        self.qr_phase = QrPhase::Idle;
-        self.qr_polling = false;
-        self.next_qr_poll = None;
-        self.account_loading = false;
-    }
-
-    fn logout(&mut self) {
-        if let Err(error) = commands::auth_logout(&self.core) {
-            self.account_error = Some(error.message);
-            return;
-        }
-        self.account = Some(AccountStatus {
-            authenticated: false,
-            account: None,
-        });
-        self.login_open = false;
-        self.cancel_qr();
-        self.ready_images.remove(crate::images::ACCOUNT_AVATAR);
-        self.disconnect_room();
-        self.restore_attempted = false;
-    }
-
-    fn query_room(&mut self, preserve: bool) {
-        let room_id = self.room_id.trim().to_owned();
-        if room_id.is_empty() || !room_id.chars().all(|ch| ch.is_ascii_digit()) {
-            self.room_error = Some("请输入有效的直播间号。".to_owned());
-            return;
-        }
-        self.room_error = None;
-        self.room_loading = true;
-        if !preserve {
-            self.room = None;
-        }
-        let core = Arc::clone(&self.core);
-        let inbox = self.inbox.clone();
-        let dispatch = Arc::clone(&self.dispatch);
-        self.runtime.spawn(async move {
-            inbox.push(AppEvent::RoomLoaded {
-                preserve,
-                result: commands::room_get_info(&core, room_id).await,
-            });
-            wake(&dispatch);
-        });
-    }
-
-    fn disconnect_room(&mut self) {
-        self.stop_danmaku();
-        self.room = None;
-        self.room_id.clear();
-        self.room_error = None;
-        self.next_stats = None;
-        self.ready_images.remove(crate::images::ROOM_AVATAR);
-        self.ready_images.remove(crate::images::ROOM_COVER);
-        self.persist();
-    }
-
-    fn start_danmaku(&mut self) {
-        let Some(room_id) = self.room.as_ref().map(|room| room.room_id) else {
-            self.danmaku_error = Some("请先连接一个直播间。".to_owned());
-            return;
-        };
-        self.danmaku_error = None;
-        self.danmaku_loading = true;
-        self.messages.clear();
-        match commands::danmaku_start(&self.core, room_id) {
-            Ok(_) => {
-                if let Ok(status) = commands::danmaku_status(&self.core) {
-                    self.danmaku = status;
-                }
-            }
-            Err(error) => {
-                self.danmaku_error = Some(error.message);
-                self.danmaku_loading = false;
-            }
-        }
-    }
-
-    fn stop_danmaku(&mut self) {
-        if let Some(connection_id) = self.danmaku.connection_id.clone() {
-            let _ = commands::danmaku_stop(&self.core, connection_id);
-        }
-        if let Ok(status) = commands::danmaku_status(&self.core) {
-            self.danmaku = status;
-        }
-        self.danmaku_loading = false;
-        self.messages.clear();
-    }
-
-    fn clear_stats(&mut self) {
-        if let Some(room_id) = self.room.as_ref().map(|room| room.room_id) {
-            self.snapshots.retain(|snapshot| snapshot.room_id != room_id);
-            self.persist();
-        }
-        self.confirm_clear = false;
-    }
-
-    fn on_auth_status(&mut self, result: Result<AccountStatus, AppError>) {
-        self.account_loading = false;
-        match result {
-            Ok(status) => {
-                let avatar = status
-                    .account
-                    .as_ref()
-                    .and_then(|account| account.avatar_url.clone());
-                self.account = Some(status);
-                self.account_error = None;
-                self.request_image(crate::images::ACCOUNT_AVATAR, avatar.as_deref());
-                self.maybe_restore_room();
-            }
-            Err(error) => self.account_error = Some(error.message),
-        }
-    }
-
-    fn on_qr_started(&mut self, result: Result<QrStartResponse, AppError>) {
-        self.account_loading = false;
-        match result {
-            Ok(qr) => {
-                self.qr = Some(qr);
-                self.qr_phase = QrPhase::Pending;
-                self.account_error = None;
-                self.next_qr_poll = Some(Instant::now() + QR_POLL);
-            }
-            Err(error) => {
-                self.qr = None;
-                self.account_error = Some(error.message);
-                self.next_qr_poll = None;
-            }
-        }
-    }
-
-    fn on_qr_polled(&mut self, result: Result<AuthPollResponse, AppError>) {
-        self.qr_polling = false;
-        match result {
-            Ok(AuthPollResponse::Pending) => {
-                self.qr_phase = QrPhase::Pending;
-                self.next_qr_poll = Some(Instant::now() + QR_POLL);
-            }
-            Ok(AuthPollResponse::Scanned) => {
-                self.qr_phase = QrPhase::Scanned;
-                self.next_qr_poll = Some(Instant::now() + QR_POLL);
-            }
-            Ok(AuthPollResponse::Expired) => {
-                self.qr = None;
-                self.qr_phase = QrPhase::Expired;
-                self.next_qr_poll = None;
-            }
-            Ok(AuthPollResponse::Success { account }) => {
-                let avatar = account.avatar_url.clone();
-                self.account = Some(AccountStatus {
-                    authenticated: true,
-                    account: Some(account),
-                });
-                self.login_open = false;
-                self.cancel_qr();
-                self.request_image(crate::images::ACCOUNT_AVATAR, avatar.as_deref());
-                self.maybe_restore_room();
-            }
-            Err(error) => {
-                self.account_error = Some(error.message);
-                if error.code == nanabobo_core::commands::ErrorCode::QrExpired {
-                    self.qr = None;
-                    self.qr_phase = QrPhase::Expired;
-                    self.next_qr_poll = None;
-                } else {
-                    self.next_qr_poll = Some(Instant::now() + QR_POLL);
+            AppEvent::Stored { revision, result } => {
+                if revision == self.storage_revision {
+                    let error = result.err();
+                    if self.storage_error != error {
+                        self.storage_error = error;
+                        self.revisions.shell += 1;
+                    }
                 }
             }
         }
     }
-
-    fn on_room_loaded(&mut self, preserve: bool, result: Result<RoomInfo, AppError>) {
-        self.room_loading = false;
-        match result {
-            Ok(info) => {
-                self.room_id = info.room_id.to_string();
-                self.record_snapshot(&info);
-                let avatar = info.owner_avatar_url.clone();
-                let cover = info.cover_url.clone();
-                self.room = Some(info);
-                self.room_error = None;
-                self.next_stats = Some(Instant::now() + STATS_POLL);
-                self.request_image(crate::images::ROOM_AVATAR, avatar.as_deref());
-                self.request_image(crate::images::ROOM_COVER, cover.as_deref());
-                self.persist();
-            }
-            Err(error) => {
-                if !preserve {
-                    self.room = None;
-                }
-                self.room_error = Some(error.message);
-            }
-        }
-    }
-
-    fn maybe_restore_room(&mut self) {
-        if !self.authenticated() {
-            self.stop_danmaku();
-            self.room = None;
-            self.restore_attempted = false;
-            return;
-        }
-        if self.restore_attempted {
-            return;
-        }
-        self.restore_attempted = true;
-        if self.room_id.trim().is_empty() {
-            return;
-        }
-        self.query_room(false);
-    }
-
-    fn record_snapshot(&mut self, info: &RoomInfo) {
-        if self.snapshots.iter().any(|snapshot| {
-            snapshot.room_id == info.room_id && snapshot.captured_at == info.fetched_at
-        }) {
-            return;
-        }
-        self.snapshots.push(Snapshot {
-            room_id: info.room_id,
-            captured_at: info.fetched_at,
-            viewer_count: info.viewer_count,
-            follower_count: info.follower_count,
-            live_status: info.live_status.clone(),
-        });
-        trim_snapshots(&mut self.snapshots);
-    }
-
-    fn persist(&self) {
-        let stored = StoredState {
-            room_id: self.room_id.clone(),
-            theme: match self.theme {
-                ThemeMode::Light => "light".to_owned(),
-                ThemeMode::Dark => "dark".to_owned(),
-            },
-            snapshots: self.snapshots.clone(),
-        };
-        if let Ok(bytes) = serde_json::to_vec_pretty(&stored) {
-            let _ = std::fs::write(storage_path(), bytes);
+    fn persist(&mut self, recover: bool) {
+        self.storage_revision += 1;
+        if let Some(storage) = &self.storage {
+            storage.save(
+                self.storage_revision,
+                StoredState::from_session(self),
+                recover,
+            );
         }
     }
 }
-
-fn series(session: &Session, pick: impl Fn(&Snapshot) -> f64 + Copy) -> Vec<f64> {
-    let mut points: Vec<f64> = session
-        .current_snapshots()
-        .into_iter()
-        .rev()
-        .take(MAX_CHART_POINTS)
-        .map(pick)
-        .collect();
-    points.reverse();
-    if points.is_empty() {
-        if let Some(room) = &session.room {
-            points.push(pick(&Snapshot {
-                room_id: room.room_id,
-                captured_at: room.fetched_at,
-                viewer_count: room.viewer_count,
-                follower_count: room.follower_count,
-                live_status: room.live_status.clone(),
-            }));
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.auth.request.cancel();
+        self.room.request.cancel();
+        let _ = commands::auth_qr_cancel(&self.core);
+        if let Some(id) = self.danmaku.status.connection_id.clone() {
+            let _ = commands::danmaku_stop(&self.core, id);
         }
     }
-    points
 }
-
-fn trim_snapshots(snapshots: &mut Vec<Snapshot>) {
-    let mut counts = std::collections::HashMap::<u64, usize>::new();
-    let mut kept = Vec::new();
-    for snapshot in snapshots.iter().rev() {
-        let count = counts.entry(snapshot.room_id).or_insert(0);
-        if *count >= MAX_SNAPSHOTS_PER_ROOM {
-            continue;
-        }
-        *count += 1;
-        kept.push(snapshot.clone());
-    }
-    kept.reverse();
-    *snapshots = kept;
-}
-
-fn load_store() -> StoredState {
-    std::fs::read(storage_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
-}
-
-fn storage_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(STORAGE_FILE)
-}
-
-pub fn live_label(status: &str) -> &'static str {
+pub fn live_label(status: &LiveStatus) -> &'static str {
     match status {
-        "live" => "直播中",
-        "round" => "轮播中",
-        _ => "未开播",
+        LiveStatus::Live => "直播中",
+        LiveStatus::Round => "轮播中",
+        LiveStatus::Offline => "未开播",
+        LiveStatus::Unknown => "状态未知",
     }
 }
-
 pub fn danmaku_label(status: &DanmakuStatus) -> &'static str {
     use nanabobo_core::models::DanmakuConnectionState::*;
     match status.state {
         Connected => "已连接",
         Connecting => "连接中",
-        Reconnecting => "重连中",
+        Reconnecting => "正在重连",
         Error => "连接异常",
         Stopped => "已停止",
         Idle => "未连接",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Snapshot, trim_snapshots};
-
-    #[test]
-    fn trims_snapshots_per_room() {
-        let mut snapshots = (0..2_010)
-            .map(|index| Snapshot {
-                room_id: 1,
-                captured_at: index,
-                viewer_count: index,
-                follower_count: None,
-                live_status: "live".into(),
-            })
-            .collect();
-        trim_snapshots(&mut snapshots);
-        assert_eq!(snapshots.len(), 2_000);
-        assert_eq!(snapshots.first().map(|item| item.captured_at), Some(10));
     }
 }

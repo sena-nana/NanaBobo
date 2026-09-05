@@ -9,11 +9,15 @@ use flate2::read::ZlibDecoder;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::watch;
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{protocol::WebSocketConfig, Message},
+    MaybeTlsStream, WebSocketStream,
+};
 use uuid::Uuid;
 
 use super::client::{BilibiliClient, DanmakuConnectionInfo};
-use crate::events::EventSink;
+use crate::events::{CoreEvent, EventSink};
 use crate::models::{DanmakuConnection, DanmakuConnectionState, DanmakuMessage, DanmakuStatus};
 
 pub const DANMAKU_MESSAGE_EVENT: &str = "nanabobo://danmaku/message";
@@ -54,7 +58,8 @@ pub struct DanmakuManager {
     runtime: tokio::runtime::Handle,
     sink: Arc<dyn EventSink>,
     active: Mutex<Option<ActiveConnection>>,
-    status: Mutex<DanmakuStatus>,
+    status: Arc<Mutex<DanmakuStatus>>,
+    operation: Mutex<()>,
 }
 
 struct ActiveConnection {
@@ -69,12 +74,13 @@ impl DanmakuManager {
             runtime,
             sink,
             active: Mutex::new(None),
-            status: Mutex::new(DanmakuStatus {
+            operation: Mutex::new(()),
+            status: Arc::new(Mutex::new(DanmakuStatus {
                 connection_id: None,
                 room_id: None,
                 state: DanmakuConnectionState::Idle,
                 message: None,
-            }),
+            })),
         }
     }
 
@@ -95,7 +101,11 @@ impl DanmakuManager {
         client: BilibiliClient,
         room_id: u64,
     ) -> Result<DanmakuConnection, String> {
-        self.stop(None);
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "弹幕连接状态暂时不可用。".to_owned())?;
+        self.stop_inner(None);
         let connection = DanmakuConnection {
             connection_id: Uuid::new_v4().to_string(),
             room_id,
@@ -108,7 +118,11 @@ impl DanmakuManager {
             message: None,
         });
         let task_connection = connection.clone();
-        let sink = Arc::clone(&self.sink);
+        let sink: Arc<dyn EventSink> = Arc::new(ConnectionSink {
+            connection_id: connection.connection_id.clone(),
+            status: Arc::clone(&self.status),
+            sink: Arc::clone(&self.sink),
+        });
         let task = self.runtime.spawn(async move {
             run_loop(sink, client, task_connection, stop_rx).await;
         });
@@ -124,6 +138,13 @@ impl DanmakuManager {
     }
 
     pub fn stop(&self, connection_id: Option<&str>) -> bool {
+        let Ok(_operation) = self.operation.lock() else {
+            return false;
+        };
+        self.stop_inner(connection_id)
+    }
+
+    fn stop_inner(&self, connection_id: Option<&str>) -> bool {
         let active = self.active.lock().ok().and_then(|mut active| {
             let matches = active.as_ref().is_some_and(|current| {
                 connection_id.is_none()
@@ -151,14 +172,34 @@ impl DanmakuManager {
         if let Ok(mut current) = self.status.lock() {
             *current = status.clone();
         }
-        self.emit(DANMAKU_STATUS_EVENT, &status);
+        self.sink.emit_typed(CoreEvent::DanmakuStatus(status));
     }
+}
 
-    fn emit<E: serde::Serialize>(&self, event: &str, payload: &E) {
-        let Ok(value) = serde_json::to_value(payload) else {
+impl Drop for DanmakuManager {
+    fn drop(&mut self) {
+        self.stop_inner(None);
+    }
+}
+
+struct ConnectionSink {
+    connection_id: String,
+    status: Arc<Mutex<DanmakuStatus>>,
+    sink: Arc<dyn EventSink>,
+}
+impl EventSink for ConnectionSink {
+    fn emit_typed(&self, event: CoreEvent) {
+        let Ok(mut status) = self.status.lock() else {
             return;
         };
-        self.sink.emit(event, value);
+        if status.connection_id.as_deref() != Some(self.connection_id.as_str()) {
+            return;
+        }
+        if let CoreEvent::DanmakuStatus(next) = &event {
+            *status = next.clone();
+        }
+        drop(status);
+        self.sink.emit_typed(event);
     }
 }
 
@@ -196,32 +237,44 @@ async fn run_loop(
             }
         };
 
-        let mut connected = false;
+        let mut stable = false;
         for host in &info.hosts {
             let endpoint = format!("wss://{}:{}/sub", host.host, host.wss_port);
-            let Ok((socket, _)) = connect_async(endpoint).await else {
+            let config = WebSocketConfig::default()
+                .max_message_size(Some(DANMAKU_PARSE_LIMITS.max_input_bytes))
+                .max_frame_size(Some(DANMAKU_PARSE_LIMITS.max_input_bytes));
+            let Ok(Ok((socket, _))) = tokio::time::timeout(
+                Duration::from_secs(10),
+                connect_async_with_config(endpoint, Some(config), false),
+            )
+            .await
+            else {
                 continue;
             };
-            if run_connection(&sink, socket, &connection, &info, &mut stop)
-                .await
-                .is_ok()
-            {
-                if *stop.borrow() {
-                    return;
-                }
+            let mut authenticated = false;
+            let started = Instant::now();
+            let _ = run_connection(
+                &sink,
+                socket,
+                &connection,
+                &info,
+                &mut stop,
+                &mut authenticated,
+            )
+            .await;
+            if *stop.borrow() {
+                return;
             }
-            connected = true;
-            break;
+            if authenticated {
+                stable = started.elapsed() >= Duration::from_secs(30);
+                break;
+            }
         }
 
         if *stop.borrow() {
             return;
         }
-        retry = if connected {
-            1
-        } else {
-            retry.saturating_add(1).min(6)
-        };
+        retry = next_retry(retry, stable);
         if !wait_before_retry(&mut stop, retry).await {
             return;
         }
@@ -229,24 +282,25 @@ async fn run_loop(
 }
 
 fn emit_status(sink: &Arc<dyn EventSink>, status: DanmakuStatus) {
-    let Ok(value) = serde_json::to_value(&status) else {
-        return;
-    };
-    sink.emit(DANMAKU_STATUS_EVENT, value);
+    sink.emit_typed(CoreEvent::DanmakuStatus(status));
 }
 
 fn emit_message(sink: &Arc<dyn EventSink>, connection: &DanmakuConnection, parsed: ParsedMessage) {
-    let message = DanmakuMessage {
+    sink.emit_typed(CoreEvent::DanmakuMessage(DanmakuMessage {
         connection_id: connection.connection_id.clone(),
         room_id: connection.room_id,
         sender_name: parsed.sender_name,
         text: parsed.text,
         sent_at: now_seconds(),
-    };
-    let Ok(value) = serde_json::to_value(&message) else {
-        return;
-    };
-    sink.emit(DANMAKU_MESSAGE_EVENT, value);
+    }));
+}
+
+fn next_retry(retry: usize, stable: bool) -> usize {
+    if stable {
+        1
+    } else {
+        retry.saturating_add(1).min(6)
+    }
 }
 
 async fn wait_before_retry(stop: &mut watch::Receiver<bool>, retry: usize) -> bool {
@@ -263,6 +317,7 @@ async fn run_connection(
     connection: &DanmakuConnection,
     info: &DanmakuConnectionInfo,
     stop: &mut watch::Receiver<bool>,
+    authenticated: &mut bool,
 ) -> Result<(), ()> {
     let (mut sink_io, mut stream) = socket.split();
     let auth_body = serde_json::json!({
@@ -274,37 +329,47 @@ async fn run_connection(
         "key": info.token,
     });
     let auth_payload = serde_json::to_vec(&auth_body).map_err(|_| ())?;
-    sink_io
-        .send(Message::Binary(
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        sink_io.send(Message::Binary(
             build_packet(7, PROTO_RAW, &auth_payload).into(),
-        ))
-        .await
-        .map_err(|_| ())?;
-    emit_status(
-        sink,
-        DanmakuStatus {
-            connection_id: Some(connection.connection_id.clone()),
-            room_id: Some(connection.room_id),
-            state: DanmakuConnectionState::Connected,
-            message: None,
-        },
-    );
-
+        )),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    let auth_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut last_heartbeat = tokio::time::Instant::now();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {
             changed = stop.changed() => {
                 if changed.is_err() || *stop.borrow() { return Ok(()); }
             }
+            _ = tokio::time::sleep_until(auth_deadline), if !*authenticated => return Err(()),
             _ = heartbeat.tick() => {
-                sink_io.send(Message::Binary(build_packet(OP_HEARTBEAT, PROTO_HEARTBEAT, &[]).into())).await.map_err(|_| ())?;
+                if *authenticated && last_heartbeat.elapsed() > Duration::from_secs(65) { return Err(()); }
+                tokio::time::timeout(Duration::from_secs(10), sink_io.send(Message::Binary(build_packet(OP_HEARTBEAT, PROTO_HEARTBEAT, &[]).into()))).await.map_err(|_| ())?.map_err(|_| ())?;
             }
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Binary(payload))) => {
+                    for control in parse_controls(payload.as_ref())? {
+                        match control {
+                            Control::Authenticated => {
+                                if !*authenticated {
+                                    *authenticated = true;
+                                    last_heartbeat = tokio::time::Instant::now();
+                                    emit_status(sink, DanmakuStatus { connection_id: Some(connection.connection_id.clone()), room_id: Some(connection.room_id), state: DanmakuConnectionState::Connected, message: None });
+                                }
+                            }
+                            Control::Heartbeat => last_heartbeat = tokio::time::Instant::now(),
+                        }
+                    }
+                    if !*authenticated { continue; }
                     match parse_frames(payload.as_ref()) {
                         Ok(messages) => {
                             for parsed in messages {
-                                emit_message(sink, &connection, parsed);
+                                emit_message(sink, connection, parsed);
                             }
                         }
                         Err(error) => {
@@ -315,9 +380,9 @@ async fn run_connection(
                         }
                     }
                 }
-                Some(Ok(Message::Text(payload))) => {
+                Some(Ok(Message::Text(payload))) if *authenticated => {
                     match parse_text_message(payload.as_bytes()) {
-                        Ok(Some(parsed)) => emit_message(sink, &connection, parsed),
+                        Ok(Some(parsed)) => emit_message(sink, connection, parsed),
                         Ok(None) => {}
                         Err(error) => report_parse_rejection(&error),
                     }
@@ -328,6 +393,40 @@ async fn run_connection(
             }
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Control {
+    Authenticated,
+    Heartbeat,
+}
+
+fn parse_controls(mut bytes: &[u8]) -> Result<Vec<Control>, ()> {
+    let mut controls = Vec::new();
+    while !bytes.is_empty() {
+        if bytes.len() < HEADER_SIZE {
+            return Err(());
+        }
+        let size = u32::from_be_bytes(bytes[0..4].try_into().map_err(|_| ())?) as usize;
+        let header = u16::from_be_bytes(bytes[4..6].try_into().map_err(|_| ())?) as usize;
+        let operation = u32::from_be_bytes(bytes[8..12].try_into().map_err(|_| ())?);
+        if header < HEADER_SIZE || size < header || size > bytes.len() {
+            return Err(());
+        }
+        match operation {
+            8 => {
+                let value: Value = serde_json::from_slice(&bytes[header..size]).map_err(|_| ())?;
+                if value.get("code").and_then(Value::as_i64) != Some(0) {
+                    return Err(());
+                }
+                controls.push(Control::Authenticated);
+            }
+            3 => controls.push(Control::Heartbeat),
+            _ => {}
+        }
+        bytes = &bytes[size..];
+    }
+    Ok(controls)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -836,5 +935,107 @@ mod tests {
                 .failure,
             ParseFailure::Budget(BudgetLimit::SenderNameBytes)
         );
+    }
+    #[test]
+    fn authentication_requires_successful_ack_and_accepts_heartbeat() {
+        assert_eq!(
+            super::parse_controls(&build_packet(8, PROTO_RAW, br#"{"code":0}"#)).unwrap(),
+            vec![super::Control::Authenticated]
+        );
+        assert!(super::parse_controls(&build_packet(8, PROTO_RAW, br#"{"code":-1}"#)).is_err());
+        assert!(super::parse_controls(&build_packet(8, PROTO_RAW, br#"{}"#)).is_err());
+        assert_eq!(
+            super::parse_controls(&build_packet(3, PROTO_HEARTBEAT, &42u32.to_be_bytes())).unwrap(),
+            vec![super::Control::Heartbeat]
+        );
+    }
+    #[test]
+    fn connection_events_update_authoritative_state_and_ignore_replaced_connections() {
+        use crate::events::{CoreEvent, EventSink};
+        use crate::models::{DanmakuConnectionState, DanmakuStatus};
+        use std::sync::{Arc, Mutex};
+        let status = Arc::new(Mutex::new(DanmakuStatus {
+            connection_id: Some("first".into()),
+            room_id: Some(1),
+            state: DanmakuConnectionState::Connecting,
+            message: None,
+        }));
+        let sink = super::ConnectionSink {
+            connection_id: "first".into(),
+            status: status.clone(),
+            sink: Arc::new(crate::events::NullEventSink),
+        };
+        let connected = DanmakuStatus {
+            connection_id: Some("first".into()),
+            room_id: Some(1),
+            state: DanmakuConnectionState::Connected,
+            message: None,
+        };
+        sink.emit_typed(CoreEvent::DanmakuStatus(connected.clone()));
+        assert_eq!(
+            status.lock().unwrap().state,
+            DanmakuConnectionState::Connected
+        );
+        status.lock().unwrap().connection_id = Some("second".into());
+        sink.emit_typed(CoreEvent::DanmakuStatus(connected));
+        assert_eq!(
+            status.lock().unwrap().connection_id.as_deref(),
+            Some("second")
+        );
+    }
+    #[test]
+    fn rapid_failures_back_off_until_a_stable_connection() {
+        let mut retry = 0;
+        for expected in [1, 2, 3, 4, 5, 6, 6] {
+            retry = super::next_retry(retry, false);
+            assert_eq!(retry, expected);
+        }
+        assert_eq!(super::next_retry(retry, true), 1);
+    }
+    #[test]
+    fn event_consumer_can_query_current_manager_status() {
+        use crate::events::{CoreEvent, EventSink};
+        use crate::models::{DanmakuConnectionState, DanmakuStatus};
+        use std::sync::{Arc, Mutex};
+        struct QuerySink {
+            manager: Arc<super::DanmakuManager>,
+            observed: Arc<Mutex<Option<DanmakuStatus>>>,
+        }
+        impl EventSink for QuerySink {
+            fn emit_typed(&self, _: CoreEvent) {
+                // Fail promptly on a regression instead of hanging the test in status().
+                assert!(self.manager.status.try_lock().is_ok());
+                *self.observed.lock().unwrap() = Some(self.manager.status());
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let manager = Arc::new(super::DanmakuManager::new(
+            runtime.handle().clone(),
+            Arc::new(crate::events::NullEventSink),
+        ));
+        let connected = DanmakuStatus {
+            connection_id: Some("active".into()),
+            room_id: Some(1),
+            state: DanmakuConnectionState::Connected,
+            message: None,
+        };
+        *manager.status.lock().unwrap() = DanmakuStatus {
+            state: DanmakuConnectionState::Connecting,
+            ..connected.clone()
+        };
+        let observed = Arc::new(Mutex::new(None));
+        let sink = super::ConnectionSink {
+            connection_id: "active".into(),
+            status: manager.status.clone(),
+            sink: Arc::new(QuerySink {
+                manager,
+                observed: observed.clone(),
+            }),
+        };
+        sink.emit_typed(CoreEvent::DanmakuStatus(connected.clone()));
+        assert_eq!(*observed.lock().unwrap(), Some(connected));
     }
 }

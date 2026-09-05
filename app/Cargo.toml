@@ -10,6 +10,15 @@ publish = false
 name = "nanabobo"
 path = "src/main.rs"
 
+[features]
+native-acceptance = []
+
+[[test]]
+name = "native_desktop"
+path = "src/native_main.rs"
+harness = false
+required-features = ["native-acceptance"]
+
 [build-dependencies]
 nana-app-icon = { path = "../../.nanaui-pin/crates/nana-app-icon", default-features = false, features = ["embed"] }
 
@@ -18,7 +27,11 @@ nanabobo-core = { path = "../crates/nanabobo-core" }
 nana-ui = { path = "../../.nanaui-pin/crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls", "charts"] }
 nana-ui-platform = { path = "../../.nanaui-pin/crates/nana-ui-platform", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 wgpu = "30.0.0"
+
+[dev-dependencies]
+nana-ui-devtools = { path = "../../.nanaui-pin/crates/nana-ui-devtools", features = ["agent"] }

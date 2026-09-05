@@ -1,4 +1,6 @@
+use image::ImageDecoder;
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry, HostedGpuResources};
+use std::io::Cursor;
 
 pub const ACCOUNT_AVATAR: &str = "account-avatar";
 pub const ROOM_AVATAR: &str = "room-avatar";
@@ -13,11 +15,29 @@ pub struct DecodedImage {
 }
 
 pub fn decode(slot: impl Into<String>, bytes: &[u8]) -> Option<DecodedImage> {
-    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
-    let width = image.width().max(1);
-    let height = image.height().max(1);
+    if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
+        return None;
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    reader.limits(limits);
+    let decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    if width == 0
+        || height == 0
+        || u64::from(width) * u64::from(height) > 8 * 1024 * 1024
+        || decoder.total_bytes() > 64 * 1024 * 1024
+    {
+        return None;
+    }
+    let image = image::DynamicImage::from_decoder(decoder).ok()?.to_rgba8();
     let mut rgba = image.into_raw();
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         pixel[0] = ((u16::from(pixel[0]) * alpha) / 255) as u8;
         pixel[1] = ((u16::from(pixel[1]) * alpha) / 255) as u8;
@@ -80,4 +100,26 @@ pub fn upload(
         HostTextureAlphaMode::Premultiplied,
     );
     texture
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn png(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(pixels, width, height, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        bytes
+    }
+    #[test]
+    fn decodes_premultiplied_pixels_and_rejects_oversized_dimensions() {
+        let decoded = decode("test", &png(1, 1, &[200, 100, 50, 128])).unwrap();
+        assert_eq!(decoded.rgba, vec![100, 50, 25, 128]);
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+        let wide = png(4097, 1, &vec![0; 4097 * 4]);
+        assert!(decode("test", &wide).is_none());
+        assert!(decode("test", b"invalid").is_none());
+    }
 }

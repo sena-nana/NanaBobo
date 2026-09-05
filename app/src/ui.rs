@@ -1,864 +1,679 @@
-use std::collections::HashSet;
+#[cfg(test)]
+mod acceptance;
+mod data;
+mod desktop;
+mod feed;
+pub use desktop::DesktopDanmakuView;
 
-use nana_ui::runtime::{
-    AboutMetadata, AboutSection, Activate, AppearanceSection, Avatar, Button, DesktopShell,
-    Dialog, DocumentId, EmptyState, Entity, FrameworkError, GpuTextureView, LabeledValue, ListItem,
-    OverlayClosing, QrCode, RuntimeDocument, ScrollAxes, ScrollView, SidebarFrame, SidebarFooter,
-    SidebarRow, SidebarRowState, Stack, StatusBadge, StatusTone, TabOption, Tabs, TabsEvent, Text,
-    TextChanged, TextInput, TimeSeriesChart, ValidationIntent, ValidationMessage,
-};
-use nana_ui::{AppearanceEvent, ButtonKind};
-
-use crate::images::{ACCOUNT_AVATAR, ROOM_AVATAR, ROOM_COVER};
+use crate::images::{ACCOUNT_AVATAR, ROOM_AVATAR};
 use crate::session::{
-    danmaku_label, live_label, AppEvent, Inbox, Page, QrPhase, Session, StatsTab, Wake,
+    danmaku_label, live_label, timestamp, AppEvent, Inbox, Page, QrPhase, Revisions, Session,
 };
+use feed::Feed;
+use nana_ui::runtime::*;
+use nana_ui::ButtonKind;
+use std::sync::Arc;
 
 pub struct Shell {
     shell: Entity<DesktopShell>,
     document_id: DocumentId,
-    nav_body: Entity<ScrollView>,
+    nav: Entity<ScrollView>,
     footer: Entity<SidebarFooter>,
-    inspector: Entity<Stack>,
+    banner: Entity<Stack>,
     primary: Entity<Stack>,
-    login_dialog: Option<Entity<Dialog>>,
-    login_body: Option<Entity<Stack>>,
-    bound: HashSet<nana_ui::runtime::StableNodeId>,
+    header: Option<Entity<Stack>>,
+    toolbar: Option<Entity<Stack>>,
+    content: Option<Entity<Stack>>,
+    login: Option<(Entity<Dialog>, Entity<Stack>)>,
+    clear: Option<(Entity<Dialog>, Entity<Stack>)>,
+    last: Option<(Page, Revisions)>,
+    connection: Option<nanabobo_core::models::DanmakuStatus>,
 }
-
 impl Shell {
-    pub fn mount(document: &mut RuntimeDocument, session: &Session) -> Result<Self, FrameworkError> {
+    pub fn mount(
+        document: &mut RuntimeDocument,
+        session: &Session,
+    ) -> Result<Self, FrameworkError> {
         let document_id = document.document();
         let cx = document.context_mut();
-        let _ = cx.set_theme(session.theme);
-        let (shell, nav_body, footer, inspector, primary) = cx.build(document_id, |ui| {
-            let home = ui.child("nav-home", nav_row("首页", session.page == Page::Home));
-            let assistant = ui.child(
-                "nav-assistant",
-                nav_row("主播助手", session.page == Page::Assistant),
-            );
-            let stats = ui.child("nav-stats", nav_row("数据", session.page == Page::Stats));
-            let nav_body = ui.leaf(SidebarFrame::vertical_body_scroll());
-            ui.nest(nav_body, |ui| {
-                ui.adopt(home);
-                ui.adopt(assistant);
-                ui.adopt(stats);
-            });
+        cx.set_theme(session.theme)?;
+        let (shell, nav, footer, banner, primary) = cx.build(document_id, |ui| {
+            let nav = ui.leaf(SidebarFrame::vertical_body_scroll());
             let footer = ui.leaf(SidebarFooter::new());
-            let frame = ui.leaf(
+            let sidebar = ui.leaf(
                 SidebarFrame::new()
-                    .body(nav_body.stable_id())
+                    .body(nav.stable_id())
                     .footer(footer.stable_id()),
             );
-            ui.nest(frame, |ui| {
-                ui.adopt(nav_body);
+            ui.nest(sidebar, |ui| {
+                ui.adopt(nav);
                 ui.adopt(footer);
             });
-            let inspector = ui.leaf(Stack::fill_column(10.0));
-            let primary = ui.leaf(Stack::fill_column(12.0));
+            let banner = ui.leaf(Stack::column(6.0));
+            let primary = ui.leaf(Stack::fill_column(16.0));
+            let page = ui.leaf(Stack::fill_column(12.0).padding(20.0));
+            ui.nest(page, |ui| {
+                ui.adopt(banner);
+                ui.adopt(primary);
+            });
             let shell = ui.child(
                 "shell",
                 DesktopShell::new()
                     .title("Nana播播工具箱")
-                    .navigation(frame.stable_id())
-                    .inspector(inspector.stable_id())
-                    .primary(primary.stable_id()),
+                    .navigation(sidebar.stable_id())
+                    .primary(page.stable_id()),
             );
-            bind_nav(ui, home, session.inbox.clone(), Page::Home);
-            bind_nav(ui, assistant, session.inbox.clone(), Page::Assistant);
-            bind_nav(ui, stats, session.inbox.clone(), Page::Stats);
-            (shell, nav_body, footer, inspector, primary)
+            (shell, nav, footer, banner, primary)
         })?;
-        cx.assemble_desktop_shell(shell)?;
-        let mut shell = Self {
+        let mut s = Self {
             shell,
             document_id,
-            nav_body,
+            nav,
             footer,
-            inspector,
+            banner,
             primary,
-            login_dialog: None,
-            login_body: None,
-            bound: HashSet::new(),
+            header: None,
+            toolbar: None,
+            content: None,
+            login: None,
+            clear: None,
+            last: None,
+            connection: None,
         };
-        shell.sync(document, session)?;
-        Ok(shell)
+        s.sync(document, session)?;
+        Ok(s)
     }
-
     pub fn sync(
         &mut self,
         document: &mut RuntimeDocument,
         session: &Session,
     ) -> Result<(), FrameworkError> {
         let cx = document.context_mut();
-        let _ = cx.set_theme(session.theme);
-        self.sync_nav(cx, session)?;
-        self.sync_footer(cx, session)?;
-        self.sync_inspector(cx, session)?;
-        self.sync_primary(cx, session)?;
-        self.sync_overlay(cx, session)?;
+        let previous = self.last;
+        let page_changed = previous.is_none_or(|(p, _)| p != session.page);
+        let shell_changed = previous.is_none_or(|(_, r)| r.shell != session.revisions.shell);
+        let room_changed = page_changed
+            || shell_changed
+            || previous.is_none_or(|(_, r)| r.room != session.revisions.room);
+        let desktop_changed =
+            room_changed || previous.is_none_or(|(_, r)| r.desktop != session.revisions.desktop);
+        let stats_changed = page_changed
+            || shell_changed
+            || previous.is_none_or(|(_, r)| r.stats != session.revisions.stats);
+        if shell_changed || page_changed {
+            cx.set_theme(session.theme)?;
+            self.sync_nav(cx, session)?;
+            self.sync_footer(cx, session)?;
+            self.sync_banner(cx, session)?;
+        }
+        if page_changed {
+            self.header = None;
+            self.toolbar = None;
+            self.content = None;
+        }
+        match session.page {
+            Page::Workbench => {
+                if self.header.is_none() {
+                    let mut parts = None;
+                    cx.mount(self.primary, |ui| {
+                        let header = ui.child("room-context", Stack::column(8.0))?;
+                        let toolbar = ui.child("overview-data", Stack::column(6.0))?;
+                        let content = ui.child("desktop-launcher", Stack::fill_column(0.0))?;
+                        parts = Some((header, toolbar, content));
+                        Ok(())
+                    })?;
+                    let (header, toolbar, content) = parts.expect("workbench");
+                    self.header = Some(header);
+                    self.toolbar = Some(toolbar);
+                    self.content = Some(content);
+                }
+                if room_changed {
+                    self.sync_room(cx, session)?;
+                }
+                if desktop_changed
+                    || stats_changed
+                    || self.connection.as_ref() != Some(&session.danmaku.status)
+                {
+                    self.sync_overview(cx, session, room_changed || stats_changed)?;
+                }
+            }
+            Page::Stats => {
+                if stats_changed {
+                    data::mount_data(cx, self.primary, session)?;
+                }
+            }
+            Page::Settings => {
+                if shell_changed || page_changed {
+                    data::mount_settings(cx, self.primary, session)?;
+                }
+            }
+        }
+        if page_changed
+            || shell_changed
+            || previous.is_none_or(|(_, r)| r.overlay != session.revisions.overlay)
+        {
+            self.sync_overlays(cx, session)?;
+        }
         cx.assemble_desktop_shell(self.shell)?;
+        self.connection = Some(session.danmaku.status.clone());
+        self.last = Some((session.page, session.revisions));
         Ok(())
     }
-
-    fn sync_nav(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        let _ = session;
-        cx.mount(self.nav_body, |ui| {
-            ui.child("nav-home", nav_row("首页", session.page == Page::Home))?;
-            ui.child(
-                "nav-assistant",
-                nav_row("主播助手", session.page == Page::Assistant),
-            )?;
-            ui.child("nav-stats", nav_row("数据", session.page == Page::Stats))?;
-            Ok(())
-        })
+    pub fn needs_layout_sync(&self, _document: &RuntimeDocument) -> bool {
+        false
     }
-
-    fn sync_footer(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        let inbox = session.inbox.clone();
-        let mut login = None;
-        let mut logout = None;
+    fn sync_nav(&self, cx: &mut AppContext, s: &Session) -> Result<(), FrameworkError> {
+        let mut rows = Vec::new();
+        cx.mount(self.nav, |ui| {
+            for (key, label, page) in [
+                ("workbench", "概览", Page::Workbench),
+                ("data", "数据", Page::Stats),
+            ] {
+                rows.push((ui.child(key, nav_row(label, s.page == page))?, page));
+            }
+            Ok(())
+        })?;
+        for (row, page) in rows {
+            action(cx, row, s.inbox.clone(), AppEvent::Navigate(page))?;
+        }
+        Ok(())
+    }
+    fn sync_footer(&self, cx: &mut AppContext, s: &Session) -> Result<(), FrameworkError> {
+        let mut account = None;
         let mut settings = None;
         cx.mount(self.footer, |ui| {
-            if session.authenticated() {
-                let name = session.account_name().unwrap_or("已登录");
+            if s.authenticated() {
+                let name = s.account_name().unwrap_or("已登录");
                 ui.child(
                     "avatar",
-                    Avatar::new(image_resource(session, ACCOUNT_AVATAR))
-                        .size(28.0)
-                        .label(name),
+                    Avatar::new(if s.has_image(ACCOUNT_AVATAR) {
+                        ACCOUNT_AVATAR
+                    } else {
+                        ""
+                    })
+                    .size(28.0)
+                    .label(name),
                 )?;
-                ui.child("name", Text::new(name))?;
-                logout = Some(ui.child(
-                    "logout",
-                    Button::new("退出登录")
-                        .kind(ButtonKind::Ghost)
-                        .loading(session.account_loading),
-                )?);
+                let mut account_name = Text::new(name);
+                let layout = Arc::make_mut(&mut account_name.style.layout);
+                layout.max_width = Some(LengthSpec::Px(76.0));
+                layout.white_space_nowrap = true;
+                layout.text_overflow_ellipsis = true;
+                ui.child("name", account_name)?;
+                account = Some((
+                    ui.child("logout", Button::new("退出登录").kind(ButtonKind::Ghost))?,
+                    AppEvent::Logout,
+                ));
             } else {
-                login = Some(ui.child("login", SidebarRow::new("登录 B 站"))?);
+                account = Some((
+                    ui.child(
+                        "login",
+                        Button::new("登录 B 站").loading(s.auth.loading() && !s.auth.open),
+                    )?,
+                    AppEvent::OpenLogin,
+                ));
             }
-            settings = Some(ui.child(
-                "settings",
-                nav_row("设置", session.page == Page::Settings),
-            )?);
+            settings = Some(ui.child("settings", nav_row("设置", s.page == Page::Settings))?);
             Ok(())
         })?;
-        if let Some(entity) = login {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::OpenLogin)?;
+        if let Some((node, event)) = account {
+            action(cx, node, s.inbox.clone(), event)?;
         }
-        if let Some(entity) = logout {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::Logout)?;
-        }
-        if let Some(entity) = settings {
-            bind_once(
-                cx,
-                &mut self.bound,
-                entity,
-                inbox,
-                AppEvent::Navigate(Page::Settings),
-            )?;
-        }
-        Ok(())
+        action(
+            cx,
+            settings.expect("settings"),
+            s.inbox.clone(),
+            AppEvent::Navigate(Page::Settings),
+        )
     }
-
-    fn sync_inspector(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        let inbox = session.inbox.clone();
-        let mut query = None;
-        let mut disconnect = None;
-        let mut input = None;
-        cx.mount(self.inspector, |ui| {
-            if !session.authenticated() {
+    fn sync_banner(&self, cx: &mut AppContext, s: &Session) -> Result<(), FrameworkError> {
+        let mut retry = None;
+        cx.mount(self.banner, |ui| {
+            if let Some(error) = &s.storage_error {
                 ui.child(
-                    "empty",
-                    EmptyState::new("登录后连接直播间")
-                        .message("在侧栏底部登录 B 站账号。"),
+                    "storage-error",
+                    ValidationMessage::new(error.clone(), ValidationIntent::Warning),
                 )?;
-                return Ok(());
+                retry = Some(ui.child("retry-storage", Button::new("重试保存"))?);
             }
-            if let Some(info) = &session.room {
-                let owner = info
-                    .owner_name
-                    .clone()
-                    .unwrap_or_else(|| format!("UID {}", info.owner_id));
-                ui.child(
-                    "avatar",
-                    Avatar::new(image_resource(session, ROOM_AVATAR))
-                        .size(56.0)
-                        .label(owner.as_str()),
-                )?;
-                if session.has_image(ROOM_COVER) {
+            if !s.auth.open {
+                if let Some(error) = s.auth.error() {
                     ui.child(
-                        "cover",
-                        GpuTextureView::new(ROOM_COVER)
-                            .with_corner_radius(8.0)
-                            .contain(),
+                        "account-error",
+                        ValidationMessage::new(error, ValidationIntent::Danger),
                     )?;
                 }
-                ui.child("owner", Text::new(owner))?;
-                ui.child(
-                    "status",
-                    LabeledValue::new("状态", live_label(&info.live_status)),
-                )?;
-                ui.child(
-                    "viewers",
-                    LabeledValue::new("在线", info.viewer_count.to_string()),
-                )?;
-                ui.child(
-                    "followers",
-                    LabeledValue::new(
-                        "关注",
-                        info.follower_count
-                            .map(|count| count.to_string())
-                            .unwrap_or_else(|| "暂无".to_owned()),
-                    ),
-                )?;
-                ui.child(
-                    "room",
-                    LabeledValue::new("房间号", info.room_id.to_string()),
-                )?;
-                disconnect = Some(ui.child(
-                    "disconnect",
-                    Button::new("切换直播间").kind(ButtonKind::Ghost),
-                )?);
-            } else {
-                let mut field = TextInput::new(session.room_id.clone());
-                field.placeholder = "输入直播间号".into();
-                field.invalid = session.room_error.is_some();
-                input = Some(ui.child("room-id", field)?);
-                query = Some(ui.child(
-                    "query",
-                    Button::new("连接直播间")
-                        .kind(ButtonKind::Primary)
-                        .loading(session.room_loading),
-                )?);
-            }
-            if let Some(error) = &session.room_error {
-                ui.child(
-                    "error",
-                    ValidationMessage::new(error.clone(), ValidationIntent::Danger),
-                )?;
             }
             Ok(())
         })?;
-        if let Some(entity) = input {
-            if self.bound.insert(entity.stable_id()) {
-                let inbox = inbox.clone();
-                cx.on(entity, move |_input, event: &TextChanged, cx| {
-                    inbox.push(AppEvent::RoomIdChanged(event.value.clone()));
-                    cx.dispatch_program(Wake);
-                })?;
-            }
-        }
-        if let Some(entity) = query {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::QueryRoom)?;
-        }
-        if let Some(entity) = disconnect {
-            bind_once(
-                cx,
-                &mut self.bound,
-                entity,
-                inbox,
-                AppEvent::DisconnectRoom,
-            )?;
+        if let Some(node) = retry {
+            action(cx, node, s.inbox.clone(), AppEvent::RetryStore)?;
         }
         Ok(())
     }
-
-    fn sync_primary(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        match session.page {
-            Page::Home => self.sync_home(cx, session),
-            Page::Assistant => self.sync_assistant(cx, session),
-            Page::Stats => self.sync_stats(cx, session),
-            Page::Settings => self.sync_settings(cx, session),
-        }
-    }
-
-    fn sync_home(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        cx.mount(self.primary, |ui| {
-            if !session.authenticated() {
+    fn sync_room(&self, cx: &mut AppContext, s: &Session) -> Result<(), FrameworkError> {
+        let mut actions = Vec::new();
+        let mut field = None;
+        cx.mount(self.header.expect("header"), |ui| {
+            ui.child("heading", heading("概览"))?;
+            if !s.authenticated() {
                 ui.child(
-                    "empty",
-                    EmptyState::new("登录后开始使用").message("在侧栏底部登录 B 站账号。"),
+                    "welcome",
+                    Text::new("登录 B 站，查看直播间数据并启动桌面弹幕。"),
                 )?;
-            } else if let Some(info) = &session.room {
-                ui.child(
-                    "live",
-                    LabeledValue::new("直播状态", live_label(&info.live_status)),
-                )?;
-                ui.child(
-                    "viewers",
-                    LabeledValue::new("在线", info.viewer_count.to_string()),
-                )?;
-                ui.child(
-                    "followers",
-                    LabeledValue::new(
-                        "关注",
-                        info.follower_count
-                            .map(|count| count.to_string())
-                            .unwrap_or_else(|| "暂无".to_owned()),
-                    ),
-                )?;
-                ui.child(
-                    "danmaku",
-                    LabeledValue::new("弹幕", danmaku_label(&session.danmaku)),
-                )?;
-                ui.child(
-                    "trend",
-                    TimeSeriesChart::new(session.viewer_series()).label("在线人数"),
-                )?;
-            } else {
-                ui.child(
-                    "empty",
-                    EmptyState::new("连接直播间").message("在右侧输入直播间号。"),
-                )?;
-            }
-            Ok(())
-        })
-    }
-
-    fn sync_assistant(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        let inbox = session.inbox.clone();
-        let mut start = None;
-        let mut stop = None;
-        cx.mount(self.primary, |ui| {
-            if !session.authenticated() {
-                ui.child(
-                    "empty",
-                    EmptyState::new("登录后使用弹幕助手")
-                        .message("在侧栏底部登录 B 站账号。"),
-                )?;
+                actions.push((
+                    ui.child(
+                        "login",
+                        Button::new("登录 B 站")
+                            .kind(ButtonKind::Primary)
+                            .loading(s.auth.loading()),
+                    )?,
+                    AppEvent::OpenLogin,
+                ));
                 return Ok(());
             }
-            let Some(info) = &session.room else {
-                ui.child(
-                    "empty",
-                    EmptyState::new("先连接一个直播间")
-                        .message("在右侧连接直播间后再开始监控。"),
-                )?;
-                return Ok(());
-            };
-            ui.child("title", Text::new(info.title.clone()))?;
-            ui.child(
-                "badge",
-                StatusBadge::new(
-                    danmaku_label(&session.danmaku),
-                    match session.danmaku.state {
-                        nanabobo_core::models::DanmakuConnectionState::Connected => {
-                            StatusTone::Success
-                        }
-                        nanabobo_core::models::DanmakuConnectionState::Error => StatusTone::Danger,
-                        nanabobo_core::models::DanmakuConnectionState::Connecting
-                        | nanabobo_core::models::DanmakuConnectionState::Reconnecting => {
-                            StatusTone::Warning
-                        }
-                        _ => StatusTone::Neutral,
-                    },
-                ),
-            )?;
-            if session.danmaku.connection_id.is_some() {
-                stop = Some(ui.child(
-                    "stop",
-                    Button::new("停止")
-                        .kind(ButtonKind::Ghost)
-                        .loading(session.danmaku_loading),
-                )?);
-            } else {
-                start = Some(ui.child(
-                    "start",
-                    Button::new("开始监控")
-                        .kind(ButtonKind::Primary)
-                        .loading(session.danmaku_loading),
-                )?);
-            }
-            if session.messages.is_empty() {
-                ui.child(
-                    "empty-list",
-                    EmptyState::new(if session.danmaku.connection_id.is_some() {
-                        "等待新的弹幕…"
-                    } else {
-                        "点击开始监控，接收实时弹幕。"
-                    }),
-                )?;
-            } else {
-                ui.with_child("list", ScrollView::new(ScrollAxes::Vertical).label("实时弹幕"), |ui| {
-                    for (index, message) in session.messages.iter().rev().take(80).enumerate() {
+            if let Some(room) = &s.room.info {
+                ui.with_child("context", Stack::column(6.0), |ui| {
+                    ui.with_child(
+                        "title-row",
+                        Stack::row(10.0).width(LengthSpec::Fill),
+                        |ui| {
+                            ui.child(
+                                "avatar",
+                                Avatar::new(if s.has_image(ROOM_AVATAR) {
+                                    ROOM_AVATAR
+                                } else {
+                                    ""
+                                })
+                                .size(40.0)
+                                .label(room.owner_name.as_deref().unwrap_or("主播")),
+                            )?;
+                            let mut title = Text::new(&room.title);
+                            let layout = Arc::make_mut(&mut title.style.layout);
+                            layout.width = Some(LengthSpec::Px(300.0));
+                            layout.flex_grow = Some(1.0);
+                            layout.flex_shrink = Some(1.0);
+                            layout.min_width = Some(LengthSpec::Px(0.0));
+                            layout.word_break = Some(WordBreakSpec::BreakWord);
+                            ui.child("title", title)?;
+                            Ok(())
+                        },
+                    )?;
+                    ui.child(
+                        "details",
+                        muted(format!(
+                            "{} · 房间 {} · {}",
+                            room.owner_name.as_deref().unwrap_or("主播"),
+                            room.room_id,
+                            live_label(&room.live_status)
+                        )),
+                    )?;
+                    ui.with_child("room-actions", Stack::row(8.0), |ui| {
+                        actions.push((
+                            ui.child("switch", Button::new("切换直播间"))?,
+                            AppEvent::EditRoom,
+                        ));
+                        actions.push((
+                            ui.child("disconnect", Button::new("断开直播间"))?,
+                            AppEvent::DisconnectRoom,
+                        ));
                         ui.child(
-                            format!("m{index}"),
-                            ListItem::new(format!(
-                                "{}  {}",
-                                message.sender_name, message.text
-                            )),
+                            "updated",
+                            muted(format!("更新于 {}", timestamp(room.fetched_at))),
                         )?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                })?;
+            }
+            if s.room.info.is_none() || s.room.editing {
+                ui.with_child("room-form", Stack::row(8.0).width(LengthSpec::Fill), |ui| {
+                    let mut input = TextInput::new(&s.room.input).label("直播间号");
+                    let mut style = input.style.clone();
+                    let layout = Arc::make_mut(&mut style.layout);
+                    layout.width = Some(LengthSpec::Px(240.0));
+                    layout.min_width = Some(LengthSpec::Px(100.0));
+                    layout.flex_grow = Some(1.0);
+                    layout.flex_shrink = Some(1.0);
+                    input = input.style(style);
+                    input.placeholder = "输入直播间号".into();
+                    input.invalid = s.room.error().is_some();
+                    input.disabled = s.room.loading();
+                    field = Some(ui.child("room-id", input)?);
+                    actions.push((
+                        ui.child(
+                            "connect",
+                            Button::new("连接直播间")
+                                .kind(ButtonKind::Primary)
+                                .loading(s.room.loading()),
+                        )?,
+                        AppEvent::QueryRoom,
+                    ));
+                    if s.room.info.is_some() {
+                        actions.push((
+                            ui.child("cancel", Button::new("取消"))?,
+                            AppEvent::CancelEditRoom,
+                        ));
                     }
                     Ok(())
                 })?;
             }
-            if let Some(error) = &session.danmaku_error {
+            if let Some(error) = s.room.error() {
                 ui.child(
-                    "error",
-                    ValidationMessage::new(error.clone(), ValidationIntent::Danger),
+                    "room-error",
+                    ValidationMessage::new(error, ValidationIntent::Danger),
                 )?;
+                if s.room.info.is_some() && !s.room.editing {
+                    actions.push((
+                        ui.child("retry-room", Button::new("重试刷新"))?,
+                        AppEvent::RefreshRoom,
+                    ));
+                }
             }
             Ok(())
         })?;
-        if let Some(entity) = start {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::StartDanmaku)?;
+        for (node, event) in actions {
+            action(cx, node, s.inbox.clone(), event)?;
         }
-        if let Some(entity) = stop {
-            bind_once(cx, &mut self.bound, entity, inbox, AppEvent::StopDanmaku)?;
+        if let Some(field) = field {
+            let inbox = s.inbox.clone();
+            cx.on_keyed(field, "input", move |_, event: &TextChanged, _| {
+                inbox.push(AppEvent::RoomIdChanged(event.value.clone()));
+            })?;
+            let inbox = s.inbox.clone();
+            cx.on_keyed(field, "submit", move |_, event: &TextSubmitted, _| {
+                inbox.push(AppEvent::RoomIdChanged(event.value.clone()));
+                inbox.push(AppEvent::QueryRoom);
+            })?;
         }
         Ok(())
     }
-
-    fn sync_stats(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
+    fn sync_overview(
+        &self,
+        cx: &mut AppContext,
+        s: &Session,
+        metrics_changed: bool,
     ) -> Result<(), FrameworkError> {
-        let inbox = session.inbox.clone();
-        let mut tabs = None;
-        let mut clear = None;
-        let mut confirm = None;
-        let mut cancel = None;
-        cx.mount(self.primary, |ui| {
-            if !session.authenticated() {
-                ui.child(
-                    "empty",
-                    EmptyState::new("登录后查看数据").message("在侧栏底部登录 B 站账号。"),
-                )?;
-                return Ok(());
-            }
-            if session.room.is_none() {
-                ui.child(
-                    "empty",
-                    EmptyState::new("先连接一个直播间")
-                        .message("在右侧连接直播间后查看趋势和历史。"),
-                )?;
-                return Ok(());
-            }
-            ui.child("heading", Text::new("数据"))?;
-            tabs = Some(
-                ui.child(
-                    "tabs",
-                    Tabs::new(match session.stats_tab {
-                        StatsTab::Trend => "trend",
-                        StatsTab::History => "history",
-                    })
-                    .options([
-                        TabOption::new("trend", "趋势").draggable(false),
-                        TabOption::new("history", "历史").draggable(false),
-                    ])
-                    .fill(true),
-                )?,
-            );
-            let history = session.current_snapshots();
-            match session.stats_tab {
-                StatsTab::Trend => {
-                    ui.child(
-                        "viewers",
-                        TimeSeriesChart::new(session.viewer_series()).label("在线人数"),
-                    )?;
+        let mut actions = Vec::new();
+        if metrics_changed {
+            cx.mount(self.toolbar.expect("overview data"), |ui| {
+                let Some(room) = &s.room.info else {
+                    return Ok(());
+                };
+                ui.with_child("metrics", Stack::row(24.0), |ui| {
+                    ui.child("viewers", heading(format!("人气  {}", room.viewer_count)))?;
                     ui.child(
                         "followers",
-                        TimeSeriesChart::new(session.follower_series()).label("关注数"),
+                        heading(format!(
+                            "粉丝  {}",
+                            room.follower_count
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "暂无数据".into())
+                        )),
                     )?;
-                    let latest = history.last();
-                    ui.child(
-                        "now",
-                        LabeledValue::new(
-                            "当前在线",
-                            latest
-                                .map(|item| item.viewer_count.to_string())
-                                .unwrap_or_else(|| "暂无".to_owned()),
-                        ),
-                    )?;
-                    ui.child(
-                        "follow",
-                        LabeledValue::new(
-                            "关注数",
-                            latest
-                                .and_then(|item| item.follower_count)
-                                .map(|count| count.to_string())
-                                .unwrap_or_else(|| "暂无".to_owned()),
-                        ),
-                    )?;
-                    ui.child(
-                        "points",
-                        LabeledValue::new("采集点", history.len().to_string()),
-                    )?;
+                    Ok(())
+                })?;
+                let samples: Vec<_> = s
+                    .stats
+                    .snapshots
+                    .iter()
+                    .filter(|v| v.room_id == room.room_id)
+                    .rev()
+                    .take(30)
+                    .collect();
+                if !samples.is_empty() {
+                    let mut chart = TimeSeriesChart::from_samples(samples.iter().rev().map(|v| {
+                        (
+                            (v.captured_at.saturating_mul(1000)) as i64,
+                            Some(v.viewer_count as f64),
+                        )
+                    }))
+                    .label("最近人气趋势")
+                    .unit("人气")
+                    .time_labels(
+                        timestamp(samples.last().unwrap().captured_at),
+                        timestamp(samples[0].captured_at),
+                    );
+                    Arc::make_mut(&mut chart.style.layout).height = Some(LengthSpec::Px(140.0));
+                    ui.child("recent-trend", chart)?;
                 }
-                StatsTab::History => {
-                    if history.is_empty() {
-                        ui.child(
-                            "empty-history",
-                            EmptyState::new("当前直播间暂无历史快照。"),
-                        )?;
-                    } else {
-                        ui.with_child(
-                            "history",
-                            ScrollView::new(ScrollAxes::Vertical).label("历史快照"),
-                            |ui| {
-                                for (index, snapshot) in history.iter().rev().take(80).enumerate() {
-                                    ui.child(
-                                        format!("h{index}"),
-                                        ListItem::new(format!(
-                                            "{}  {}  {}",
-                                            snapshot.viewer_count,
-                                            snapshot
-                                                .follower_count
-                                                .map(|count| count.to_string())
-                                                .unwrap_or_else(|| "暂无".to_owned()),
-                                            live_label(&snapshot.live_status)
-                                        )),
-                                    )?;
-                                }
-                                Ok(())
-                            },
-                        )?;
-                    }
-                    if session.confirm_clear {
-                        ui.child(
-                            "confirm-hint",
-                            Text::new("将删除这个直播间保存在本地的脱敏快照。"),
-                        )?;
-                        confirm = Some(ui.child(
-                            "confirm",
-                            Button::new("确认清理").kind(ButtonKind::Danger),
-                        )?);
-                        cancel = Some(ui.child(
-                            "cancel",
-                            Button::new("取消").kind(ButtonKind::Ghost),
-                        )?);
-                    } else if !history.is_empty() {
-                        clear = Some(ui.child(
-                            "clear",
-                            Button::new("清理当前记录").kind(ButtonKind::Ghost),
-                        )?);
-                    }
-                }
-            }
-            Ok(())
-        })?;
-        if let Some(entity) = tabs {
-            if self.bound.insert(entity.stable_id()) {
-                let inbox = inbox.clone();
-                cx.on(entity, move |_tabs, event: &TabsEvent, cx| {
-                    if let TabsEvent::Select(value) = event {
-                        inbox.push(AppEvent::SelectStatsTab(if value.as_ref() == "history" {
-                            StatsTab::History
-                        } else {
-                            StatsTab::Trend
-                        }));
-                        cx.dispatch_program(Wake);
-                    }
+                actions.push((
+                    ui.child("view-data", Button::new("查看数据"))?,
+                    AppEvent::SelectHistoryRoom(room.room_id),
+                ));
+                Ok(())
+            })?;
+            for (node, event) in actions.drain(..) {
+                let inbox = s.inbox.clone();
+                cx.on_keyed(node, "activate", move |_, _: &Activate, _| {
+                    inbox.push(event.clone());
+                    inbox.push(AppEvent::Navigate(Page::Stats));
                 })?;
             }
         }
-        if let Some(entity) = clear {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::AskClearStats)?;
-        }
-        if let Some(entity) = confirm {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::ClearStats)?;
-        }
-        if let Some(entity) = cancel {
-            bind_once(cx, &mut self.bound, entity, inbox, AppEvent::CancelClearStats)?;
-        }
-        Ok(())
-    }
-
-    fn sync_settings(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        let mut appearance = None;
-        let mut about = None;
-        cx.mount(self.primary, |ui| {
-            appearance = Some(ui.child(
-                "appearance",
-                AppearanceSection::new(session.theme, session.appearance.clone()),
-            )?);
-            about = Some(ui.child(
-                "about",
-                AboutSection::new(
-                    AboutMetadata::new("Nana播播工具箱", "0.1.0")
-                        .description("B 站直播工具箱：账号登录、房间连接、弹幕助手与数据。"),
-                ),
-            )?);
-            Ok(())
-        })?;
-        if let Some(section) = appearance {
-            cx.assemble_appearance_section(section)?;
-            if self.bound.insert(section.stable_id()) {
-                let inbox = session.inbox.clone();
-                cx.on(section, move |_section, event: &AppearanceEvent, cx| {
-                    inbox.push(AppEvent::Appearance(*event));
-                    cx.dispatch_program(Wake);
-                })?;
+        cx.mount(self.content.expect("launcher"), |ui| {
+            if s.room.info.is_none() {
+                return Ok(());
             }
-        }
-        if let Some(about) = about {
-            let _ = cx.assemble_about_section(about);
-        }
-        Ok(())
-    }
-
-    fn sync_overlay(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        if !session.login_open {
-            cx.update_component(self.shell, |shell, _| {
-                shell.overlays.clear();
-            })?;
-            return Ok(());
-        }
-        if self.login_dialog.is_none() {
-            let inbox = session.inbox.clone();
-            let (dialog, body) = cx.build_detached(self.document_id, |ui| {
-                let body = ui.leaf(Stack::column(12.0));
-                let dialog = ui.leaf(Dialog::new("登录 B 站"));
-                ui.nest(dialog, |ui| ui.adopt(body));
-                ui.on(dialog, move |_, _: &OverlayClosing, cx| {
-                    inbox.push(AppEvent::CloseLogin);
-                    cx.dispatch_program(Wake);
-                });
-                (dialog, body)
-            })?;
-            self.login_dialog = Some(dialog);
-            self.login_body = Some(body);
-        }
-        let dialog = self.login_dialog.expect("login dialog");
-        let body = self.login_body.expect("login body");
-        self.mount_login_body(cx, body, session)?;
-        cx.update_component(self.shell, |shell, _| {
-            shell.overlays = vec![dialog.stable_id()];
-        })?;
-        Ok(())
-    }
-
-    fn mount_login_body(
-        &mut self,
-        cx: &mut nana_ui::runtime::AppContext,
-        body: Entity<Stack>,
-        session: &Session,
-    ) -> Result<(), FrameworkError> {
-        let inbox = session.inbox.clone();
-        let mut check = None;
-        let mut refresh = None;
-        let mut start = None;
-        cx.mount(body, |ui| {
-            if session.account_loading && session.qr.is_none() {
-                ui.child("hint", Text::new("正在生成二维码…"))?;
-            } else if let Some(qr) = &session.qr {
-                if let Ok(code) = QrCode::encode(qr.payload.as_bytes(), 224.0) {
-                    ui.child("qr", code.label("B站登录二维码"))?;
+            ui.child("title", heading("桌面弹幕"))?;
+            use crate::session::DesktopDanmakuPhase::*;
+            let phase = s.desktop.phase;
+            let label = match phase {
+                Closed => "未启动",
+                Creating => "正在打开",
+                Adjusting | Locked => danmaku_label(&s.danmaku.status),
+            };
+            ui.child("status", Text::new(label))?;
+            ui.with_child("actions", Stack::row(8.0), |ui| {
+                if matches!(phase, Closed | Creating) {
+                    actions.push((
+                        ui.child(
+                            "start",
+                            Button::new("启动桌面弹幕")
+                                .kind(ButtonKind::Primary)
+                                .loading(phase == Creating),
+                        )?,
+                        AppEvent::OpenDesktopDanmaku,
+                    ));
+                } else {
+                    actions.push((
+                        ui.child(
+                            "adjust",
+                            Button::new(if phase == Locked {
+                                "解锁并调整"
+                            } else {
+                                "调整弹幕"
+                            }),
+                        )?,
+                        AppEvent::AdjustDesktopDanmaku,
+                    ));
+                    actions.push((
+                        ui.child("close", Button::new("关闭桌面弹幕"))?,
+                        AppEvent::CloseDesktopDanmaku,
+                    ));
                 }
-                ui.child(
-                    "hint",
-                    Text::new(match session.qr_phase {
-                        QrPhase::Scanned => "已扫描，请在手机上确认登录。",
-                        QrPhase::Expired => "二维码已过期，请重新生成。",
-                        QrPhase::Idle | QrPhase::Pending => "请使用B站手机客户端扫描二维码。",
-                    }),
-                )?;
-                check = Some(ui.child(
-                    "check",
-                    Button::new("检查登录状态").loading(session.qr_polling),
-                )?);
-                refresh = Some(ui.child(
-                    "refresh",
-                    Button::new("刷新二维码").kind(ButtonKind::Ghost),
-                )?);
-            } else {
-                start = Some(ui.child(
-                    "start",
-                    Button::new("生成二维码")
-                        .kind(ButtonKind::Primary)
-                        .loading(session.account_loading),
-                )?);
-            }
-            if let Some(error) = &session.account_error {
+                Ok(())
+            })?;
+            if let Some(error) = s
+                .desktop
+                .error
+                .as_ref()
+                .or(s.danmaku.status.message.as_ref())
+            {
                 ui.child(
                     "error",
-                    ValidationMessage::new(error.clone(), ValidationIntent::Danger),
+                    ValidationMessage::new(error.as_str(), ValidationIntent::Warning),
                 )?;
             }
             Ok(())
         })?;
-        if let Some(entity) = check {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::PollQr)?;
-        }
-        if let Some(entity) = refresh {
-            bind_once(cx, &mut self.bound, entity, inbox.clone(), AppEvent::StartQr)?;
-        }
-        if let Some(entity) = start {
-            bind_once(cx, &mut self.bound, entity, inbox, AppEvent::StartQr)?;
+        for (node, event) in actions {
+            action(cx, node, s.inbox.clone(), event)?;
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    pub fn collect_labels(&self, document: &RuntimeDocument) -> Vec<String> {
-        let world = document.context().world();
-        let mut labels = Vec::new();
-        collect_node_labels(world, self.shell.stable_id(), &mut labels);
-        labels
-    }
-}
-
-#[cfg(test)]
-fn collect_node_labels(
-    world: &nana_ui::runtime::UiWorld,
-    id: nana_ui::runtime::StableNodeId,
-    labels: &mut Vec<String>,
-) {
-    if let Some(text) = world.text(id) {
-        let text = text.trim();
-        if !text.is_empty() {
-            labels.push(text.to_owned());
+    fn sync_overlays(&mut self, cx: &mut AppContext, s: &Session) -> Result<(), FrameworkError> {
+        let mut overlays = Vec::new();
+        if s.auth.open {
+            if self.login.is_none() {
+                self.login =
+                    Some(self.dialog(cx, "登录 B 站", s.inbox.clone(), AppEvent::CloseLogin)?);
+            }
+            let (dialog, body) = self.login.expect("login");
+            let mut refresh = None;
+            let mut cancel = None;
+            cx.mount(body, |ui| {
+                if s.auth.qr.is_none() && s.auth.loading() {
+                    ui.child("loading", Text::new("正在生成二维码…"))?;
+                } else {
+                    if let Some(qr) = &s.auth.qr {
+                        if matches!(s.auth.phase, QrPhase::Pending | QrPhase::Scanned) {
+                            match QrCode::encode(qr.payload.as_bytes(), 224.0) {
+                                Ok(code) => {
+                                    ui.child("qr", code.label("B站登录二维码"))?;
+                                }
+                                Err(_) => {
+                                    ui.child(
+                                        "encode-error",
+                                        Text::new("二维码无法显示，请重新生成。"),
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                    ui.child(
+                        "phase",
+                        Text::new(match s.auth.phase {
+                            QrPhase::Scanned => "已扫描，请在手机上确认登录。",
+                            QrPhase::Expired => "二维码已过期，请重新生成。",
+                            QrPhase::Failed => "登录暂时未完成，请重新尝试。",
+                            _ => "请使用 B 站手机客户端扫描二维码。",
+                        }),
+                    )?;
+                    refresh = Some(ui.child("refresh", Button::new("重新生成二维码"))?);
+                }
+                if let Some(error) = s.auth.error() {
+                    ui.child(
+                        "error",
+                        ValidationMessage::new(error, ValidationIntent::Danger),
+                    )?;
+                }
+                cancel = Some(ui.child("cancel-login", Button::new("取消登录"))?);
+                Ok(())
+            })?;
+            if let Some(button) = refresh {
+                action(cx, button, s.inbox.clone(), AppEvent::StartQr)?;
+            }
+            if let Some(button) = cancel {
+                action(cx, button, s.inbox.clone(), AppEvent::CloseLogin)?;
+            }
+            overlays.push(dialog.stable_id());
         }
-    }
-    if let Some(accessibility) = world.accessibility(id) {
-        if let Some(label) = &accessibility.label {
-            let label = label.trim();
-            if !label.is_empty() && labels.last().map(String::as_str) != Some(label) {
-                labels.push(label.to_owned());
+        if let Some(id) = s.stats.confirm_clear {
+            if self.clear.is_none() {
+                self.clear = Some(self.dialog(
+                    cx,
+                    "清理历史记录",
+                    s.inbox.clone(),
+                    AppEvent::CancelClearStats,
+                )?);
+            }
+            let (dialog, body) = self.clear.expect("clear");
+            let mut actions = Vec::new();
+            cx.mount(body, |ui| {
+                ui.child(
+                    "warning",
+                    Text::new(format!(
+                        "删除「{}」的全部本地历史记录？此操作无法撤销。",
+                        s.stats.room_label(id)
+                    )),
+                )?;
+                ui.with_child("actions", Stack::row(8.0), |ui| {
+                    actions.push((
+                        ui.child("cancel", Button::new("取消"))?,
+                        AppEvent::CancelClearStats,
+                    ));
+                    actions.push((
+                        ui.child("confirm", Button::new("删除记录").kind(ButtonKind::Danger))?,
+                        AppEvent::ClearStats,
+                    ));
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
+            for (node, event) in actions {
+                action(cx, node, s.inbox.clone(), event)?;
+            }
+            overlays.push(dialog.stable_id());
+        }
+        // Shell overlay slots retain children; activation is a separate Runtime
+        // transaction that establishes visibility, modal focus and dismissal.
+        let active = overlays.last().copied();
+        if active.is_none() {
+            if let Some(host) = cx.read(self.shell, |shell| shell.overlay)? {
+                cx.dismiss_overlay(Entity::<OverlayHost>::from_stable_id(host))?;
             }
         }
-    }
-    if let Some(node) = world.node(id) {
-        for child in node.children {
-            collect_node_labels(world, child, labels);
+        cx.update_component(self.shell, |shell, _| shell.overlays = overlays)?;
+        cx.assemble_desktop_shell(self.shell)?;
+        if let Some(active) = active {
+            let host = cx
+                .read(self.shell, |shell| shell.overlay)?
+                .expect("assembled overlay host");
+            cx.activate_overlay(
+                Entity::<OverlayHost>::from_stable_id(host),
+                Entity::<Dialog>::from_stable_id(active),
+            )?;
         }
+        Ok(())
+    }
+    fn dialog(
+        &self,
+        cx: &mut AppContext,
+        title: &str,
+        inbox: Inbox,
+        event: AppEvent,
+    ) -> Result<(Entity<Dialog>, Entity<Stack>), FrameworkError> {
+        let (dialog, body) = cx.build_detached(self.document_id, |ui| {
+            let body = ui.leaf(Stack::column(12.0).max_width(440.0));
+            let mut surface = Dialog::new(title);
+            surface.slots.body = Some(body.stable_id());
+            let dialog = ui.leaf(surface);
+            ui.nest(dialog, |ui| ui.adopt(body));
+            (dialog, body)
+        })?;
+        cx.on_keyed(dialog, "close", move |_, _: &OverlayClosing, _| {
+            inbox.push(event.clone())
+        })?;
+        Ok((dialog, body))
     }
 }
-
-fn image_resource<'a>(session: &Session, slot: &'a str) -> &'a str {
-    if session.has_image(slot) { slot } else { "" }
+pub(super) fn action<V: View>(
+    cx: &mut AppContext,
+    node: Entity<V>,
+    inbox: Inbox,
+    event: AppEvent,
+) -> Result<(), FrameworkError> {
+    cx.on_keyed(node, "activate", move |_, _: &Activate, _| {
+        inbox.push(event.clone())
+    })
 }
-
+pub(super) fn heading(value: impl Into<String>) -> Text {
+    let mut text = Text::new(value);
+    let style = Arc::make_mut(&mut text.style.layout);
+    style.font_size = Some(20.0);
+    style.font_weight = Some(600);
+    text
+}
+pub(super) fn muted(value: impl Into<String>) -> Text {
+    let mut text = Text::new(value);
+    text.style.foreground = Some(nana_ui::runtime::SemanticColorRole::Muted);
+    text
+}
 fn nav_row(label: &str, active: bool) -> SidebarRow {
     SidebarRow::new(label).state(if active {
         SidebarRowState::Active
     } else {
         SidebarRowState::Idle
     })
-}
-
-fn bind_nav(
-    ui: &mut nana_ui::runtime::UiBuilder<'_>,
-    row: Entity<SidebarRow>,
-    inbox: Inbox,
-    page: Page,
-) {
-    ui.on(row, move |_, _: &Activate, cx| {
-        inbox.push(AppEvent::Navigate(page));
-        cx.dispatch_program(Wake);
-    });
-}
-
-fn bind_once<V: nana_ui::runtime::View>(
-    cx: &mut nana_ui::runtime::AppContext,
-    bound: &mut HashSet<nana_ui::runtime::StableNodeId>,
-    entity: Entity<V>,
-    inbox: Inbox,
-    event: AppEvent,
-) -> Result<(), FrameworkError> {
-    if !bound.insert(entity.stable_id()) {
-        return Ok(());
-    }
-    cx.on(entity, move |_, _: &Activate, cx| {
-        inbox.push(event.clone());
-        cx.dispatch_program(Wake);
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use nana_ui::runtime::{DocumentId, RuntimeDocument};
-
-    use super::Shell;
-    use crate::session::{AppEvent, Page, Session};
-
-    fn labels_for(session: &Session) -> Vec<String> {
-        let mut document = RuntimeDocument::new(DocumentId::new(1).expect("document"));
-        let shell = Shell::mount(&mut document, session).expect("mount shell");
-        shell.collect_labels(&document)
-    }
-
-    #[test]
-    fn unauthenticated_shell_has_real_navigation_and_login() {
-        let session = Session::for_test();
-        let labels = labels_for(&session);
-        for expected in ["首页", "主播助手", "数据", "设置", "登录"] {
-            assert!(
-                labels.iter().any(|label| label.contains(expected)),
-                "缺少「{expected}」: {labels:?}"
-            );
-        }
-        assert!(
-            labels.iter().all(|label| !label.contains("历史记录")),
-            "已合并的历史入口不应出现: {labels:?}"
-        );
-    }
-
-    #[test]
-    fn stats_page_shows_login_empty_state() {
-        let mut session = Session::for_test();
-        session.apply(AppEvent::Navigate(Page::Stats));
-        let labels = labels_for(&session);
-        assert!(
-            labels.iter().any(|label| label.contains("登录后查看数据")),
-            "数据页未显示未登录空态: {labels:?}"
-        );
-    }
-
-    #[test]
-    fn login_dialog_reuses_shell_and_shows_qr_action() {
-        let mut session = Session::for_test();
-        session.apply(AppEvent::OpenLogin);
-        let mut document = RuntimeDocument::new(DocumentId::new(1).expect("document"));
-        let mut shell = Shell::mount(&mut document, &session).expect("mount");
-        let first = shell
-            .login_dialog
-            .as_ref()
-            .map(|dialog| dialog.stable_id());
-        shell.sync(&mut document, &session).expect("sync");
-        assert_eq!(
-            shell.login_dialog.as_ref().map(|dialog| dialog.stable_id()),
-            first
-        );
-        let labels = shell.collect_labels(&document);
-        assert!(
-            labels.iter().any(|label| label.contains("登录")),
-            "登录框未渲染: {labels:?}"
-        );
-    }
 }

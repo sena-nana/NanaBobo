@@ -6,7 +6,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use crate::models::{AccountSummary, RoomInfo};
+use crate::models::{AccountSummary, LiveStatus, RoomInfo};
 
 const QR_GENERATE_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
 const QR_POLL_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
@@ -44,6 +44,8 @@ impl BilibiliClient {
         );
         Client::builder()
             .default_headers(default_headers)
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .map(|http| Self { http })
             .map_err(BilibiliError::Request)
@@ -77,7 +79,7 @@ impl BilibiliClient {
         if parsed.scheme() != "http" && parsed.scheme() != "https" {
             return Err(BilibiliError::InvalidResponse);
         }
-        let response = self
+        let mut response = self
             .http
             .get(parsed)
             .header(header::REFERER, "https://www.bilibili.com/")
@@ -88,7 +90,13 @@ impl BilibiliClient {
         if !status.is_success() {
             return Err(BilibiliError::HttpStatus(status.as_u16()));
         }
-        let bytes = response.bytes().await.map_err(BilibiliError::Request)?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(BilibiliError::Request)? {
+            if bytes.len().saturating_add(chunk.len()) > 2 * 1024 * 1024 {
+                return Err(BilibiliError::InvalidResponse);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
             return Err(BilibiliError::InvalidResponse);
         }
@@ -165,9 +173,10 @@ impl BilibiliClient {
             owner_avatar_url,
             title: data.title,
             live_status: match data.live_status {
-                1 => "live".to_owned(),
-                2 => "round".to_owned(),
-                _ => "offline".to_owned(),
+                1 => LiveStatus::Live,
+                2 => LiveStatus::Round,
+                0 => LiveStatus::Offline,
+                _ => LiveStatus::Unknown,
             },
             viewer_count: data.online,
             follower_count: data.attention,
@@ -195,7 +204,7 @@ impl BilibiliClient {
             .filter(|host| !host.host.trim().is_empty())
             .map(|host| DanmakuHost {
                 host: host.host,
-                wss_port: host.wss_port.max(host.port),
+                wss_port: host.wss_port,
             })
             .filter(|host| host.wss_port > 0)
             .collect::<Vec<_>>();
@@ -319,8 +328,6 @@ struct DanmakuInfoData {
 #[derive(Debug, Deserialize)]
 struct DanmakuInfoHost {
     host: String,
-    #[serde(default)]
-    port: u16,
     #[serde(default)]
     wss_port: u16,
 }

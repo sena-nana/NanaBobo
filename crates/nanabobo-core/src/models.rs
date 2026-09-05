@@ -29,6 +29,41 @@ pub enum AuthPollResponse {
     Success { account: AccountSummary },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStatus {
+    Live,
+    Round,
+    Offline,
+    Unknown,
+}
+
+impl LiveStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Round => "round",
+            Self::Offline => "offline",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+impl From<&str> for LiveStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "live" => Self::Live,
+            "round" => Self::Round,
+            "offline" => Self::Offline,
+            _ => Self::Unknown,
+        }
+    }
+}
+impl From<String> for LiveStatus {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RoomInfo {
     pub room_id: u64,
@@ -36,7 +71,7 @@ pub struct RoomInfo {
     pub owner_name: Option<String>,
     pub owner_avatar_url: Option<String>,
     pub title: String,
-    pub live_status: String,
+    pub live_status: LiveStatus,
     pub viewer_count: u64,
     pub follower_count: Option<u64>,
     pub cover_url: Option<String>,

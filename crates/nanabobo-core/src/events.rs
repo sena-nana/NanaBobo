@@ -1,16 +1,31 @@
-//! 事件出口抽象:核心把弹幕状态与消息推给 UI 层,不关心 UI 层是什么。
-
+//! Typed business events with an adapter for legacy named consumers.
+use crate::models::{DanmakuMessage, DanmakuStatus};
 use serde_json::Value;
 
-/// 由宿主实现。事件名沿用 `nanabobo://` 约定。
-pub trait EventSink: Send + Sync + 'static {
-    fn emit(&self, event: &str, payload: Value);
+#[derive(Debug, Clone)]
+pub enum CoreEvent {
+    DanmakuStatus(DanmakuStatus),
+    DanmakuMessage(DanmakuMessage),
 }
 
-/// 静默出口:测试与无 UI 场景使用。
+pub trait EventSink: Send + Sync + 'static {
+    fn emit(&self, _event: &str, _payload: Value) {}
+    fn emit_typed(&self, event: CoreEvent) {
+        let (name, payload) = match event {
+            CoreEvent::DanmakuStatus(value) => (
+                crate::bilibili::DANMAKU_STATUS_EVENT,
+                serde_json::to_value(value),
+            ),
+            CoreEvent::DanmakuMessage(value) => (
+                crate::bilibili::DANMAKU_MESSAGE_EVENT,
+                serde_json::to_value(value),
+            ),
+        };
+        if let Ok(payload) = payload {
+            self.emit(name, payload);
+        }
+    }
+}
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NullEventSink;
-
-impl EventSink for NullEventSink {
-    fn emit(&self, _event: &str, _payload: Value) {}
-}
+impl EventSink for NullEventSink {}

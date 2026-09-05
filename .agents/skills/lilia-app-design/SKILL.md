@@ -19,8 +19,8 @@ Never show technical implementation notes, roadmap placeholders, or UI that look
 
 ## Layout
 
-- Use `DesktopShell` for sidebar, navigation, inspector, overlay, and native window chrome; do not rebuild shell structure inside a page.
-- Keep per-page state in the session object; navigation switches the primary `mount`, not a second window.
+- Use `DesktopShell` for the main window sidebar, navigation, dialogs, and chrome; do not rebuild shell structure inside a page. The transparent desktop danmaku layer uses a minimal Runtime tree and the NanaUI host window APIs.
+- Main navigation switches the primary `mount`. The overview is a data summary and function launcher; desktop danmaku is a separate transparent native tool window with its own document and view, sharing one application session. Keep ordinary page navigation in the main window.
 - Avoid landing-page composition, hero blocks, oversized headings, decorative panels, marketing card streams, and nested cards.
 
 ## Visual Language
