@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use nana_ui::runtime::{
-    AppContext, Button, EmptyState, Entity, FrameworkError, LengthSpec, ScrollAxes, ScrollView,
-    Select, SelectChanged, SelectOption, Stack, TabOption, Tabs, TabsEvent, Text, TimeSeriesChart,
+    AboutMetadata, AboutSection, AppContext, AppearanceSection, Button, EmptyState, Entity,
+    FrameworkError, LengthSpec, ScrollAxes, ScrollView, Select, SelectChanged, SelectOption, Stack,
+    TabOption, Tabs, TabsEvent, Text, TimeSeriesChart,
 };
-use nana_ui::{AppearanceEvent, ButtonKind, ThemeMode, WindowMaterialMode};
+use nana_ui::{AppearanceEvent, ButtonKind, WindowMaterialMode};
 
-use crate::session::{live_label, timestamp, AppEvent, Session, StatsTab};
+use crate::session::{live_label, timestamp, AppEvent, Session, StatsTab, Wake};
 
 use super::{action, heading, muted};
 
@@ -205,118 +206,53 @@ pub(super) fn mount_settings(
     parent: Entity<Stack>,
     session: &Session,
 ) -> Result<(), FrameworkError> {
-    let mut theme = None;
-    let mut material = None;
-    let mut opacity = None;
-    let material_value = match session.appearance.window_material() {
-        WindowMaterialMode::Solid => "solid",
-        WindowMaterialMode::Translucent => "translucent",
-        WindowMaterialMode::Mica => "mica",
-        WindowMaterialMode::Acrylic => "acrylic",
-        WindowMaterialMode::Vibrancy => "vibrancy",
+    let mut appearance = None;
+    let mut about = None;
+    let materials = if cfg!(target_os = "windows") {
+        vec![
+            WindowMaterialMode::Vibrancy,
+            WindowMaterialMode::Mica,
+            WindowMaterialMode::Acrylic,
+        ]
+    } else {
+        Vec::new()
     };
-    let mut materials = vec![
-        SelectOption::new("solid", "实色"),
-        SelectOption::new("translucent", "透明"),
-    ];
-    if cfg!(target_os = "windows") {
-        materials.extend([
-            SelectOption::new("mica", "云母"),
-            SelectOption::new("acrylic", "毛玻璃"),
-        ]);
-    }
     cx.mount(parent, |ui| {
-        ui.child("heading", heading("设置"))?;
         ui.with_child("settings-scroll", scroll("设置"), |ui| {
-            ui.with_child("settings-content", Stack::column(14.0), |ui| {
-                ui.child("appearance", heading("外观"))?;
-                ui.child("theme-label", muted("主题"))?;
-                theme = Some(
-                    ui.child(
-                        "theme",
-                        Select::new(Some(match session.theme {
-                            ThemeMode::Dark => "dark",
-                            ThemeMode::Light => "light",
-                        }))
-                        .options([
-                            SelectOption::new("light", "浅色"),
-                            SelectOption::new("dark", "深色"),
-                        ]),
-                    )?,
-                );
-                ui.child("material-label", muted("窗口背景"))?;
-                material = Some(ui.child(
-                    "material",
-                    Select::new(Some(material_value)).options(materials.clone()),
-                )?);
-                if session.appearance.window_material() != WindowMaterialMode::Solid {
-                    ui.child("opacity-label", muted("背景浓度"))?;
-                    let current = session.appearance.backdrop_opacity();
-                    let selected = if current < 0.52 {
-                        "light"
-                    } else if current < 0.745 {
-                        "medium"
-                    } else {
-                        "strong"
-                    };
-                    opacity = Some(ui.child(
-                        "opacity",
-                        Tabs::new(selected).options([
-                            TabOption::new("light", "轻盈").draggable(false),
-                            TabOption::new("medium", "适中").draggable(false),
-                            TabOption::new("strong", "浓郁").draggable(false),
-                        ]),
-                    )?);
-                }
-                ui.child("about", heading("关于"))?;
-                ui.child("name", Text::new("Nana播播工具箱"))?;
+            appearance = Some(
                 ui.child(
-                    "version",
-                    muted(format!("版本 {}", env!("CARGO_PKG_VERSION"))),
-                )?;
-                Ok(())
-            })?;
+                    "appearance",
+                    AppearanceSection::new(session.theme, session.appearance)
+                        .available_materials(materials),
+                )?,
+            );
+            about = Some(
+                ui.child(
+                    "about",
+                    AboutSection::new(
+                        AboutMetadata::new("Nana播播工具箱", env!("CARGO_PKG_VERSION"))
+                            .description("B 站直播工具箱：账号登录、房间连接、弹幕助手与数据。"),
+                    ),
+                )?,
+            );
             Ok(())
         })?;
         Ok(())
     })?;
-    if let Some(entity) = theme {
+    if let Some(section) = appearance {
+        cx.assemble_appearance_section(section)?;
         let inbox = session.inbox.clone();
-        cx.on_keyed(entity, "theme", move |_, event: &SelectChanged, _| {
-            let theme = if event.value.as_ref() == "light" {
-                ThemeMode::Light
-            } else {
-                ThemeMode::Dark
-            };
-            inbox.push(AppEvent::Appearance(AppearanceEvent::Theme(theme)));
-        })?;
+        cx.on_keyed(
+            section,
+            "appearance",
+            move |_, event: &AppearanceEvent, view| {
+                inbox.push(AppEvent::Appearance(*event));
+                view.dispatch_program(Wake);
+            },
+        )?;
     }
-    if let Some(entity) = material {
-        let inbox = session.inbox.clone();
-        cx.on_keyed(entity, "material", move |_, event: &SelectChanged, _| {
-            let value = match event.value.as_ref() {
-                "translucent" => WindowMaterialMode::Translucent,
-                "mica" => WindowMaterialMode::Mica,
-                "acrylic" => WindowMaterialMode::Acrylic,
-                _ => WindowMaterialMode::Solid,
-            };
-            inbox.push(AppEvent::Appearance(AppearanceEvent::WindowMaterial(value)));
-        })?;
-    }
-    if let Some(entity) = opacity {
-        let inbox = session.inbox.clone();
-        cx.on_keyed(entity, "opacity", move |_, event: &TabsEvent, _| {
-            if let TabsEvent::Select(value) = event {
-                let opacity = match value.as_ref() {
-                    "light" => 0.4,
-                    "strong" => 0.85,
-                    _ => 0.64,
-                };
-                inbox.push(AppEvent::Appearance(AppearanceEvent::BackdropOpacity(
-                    opacity,
-                )));
-            }
-        })?;
+    if let Some(about) = about {
+        cx.assemble_about_section(about)?;
     }
     Ok(())
 }

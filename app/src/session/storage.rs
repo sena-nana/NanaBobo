@@ -16,8 +16,12 @@ pub struct StoredState {
     pub room_id: String,
     pub snapshots: Vec<Snapshot>,
     pub theme: String,
-    pub window_material: WindowMaterialMode,
-    pub backdrop_opacity: f32,
+    pub appearance: AppearanceSettings,
+    /// 旧版格式的散落外观字段；读取时合并进 appearance，下次保存移除。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_material: Option<WindowMaterialMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backdrop_opacity: Option<f32>,
     pub desktop: super::DesktopDanmakuSettings,
 }
 impl Default for StoredState {
@@ -27,8 +31,9 @@ impl Default for StoredState {
             room_id: String::new(),
             snapshots: Vec::new(),
             theme: "dark".into(),
-            window_material: WindowMaterialMode::Solid,
-            backdrop_opacity: AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
+            appearance: AppearanceSettings::default(),
+            window_material: None,
+            backdrop_opacity: None,
             desktop: super::DesktopDanmakuSettings::default(),
         }
     }
@@ -44,22 +49,27 @@ impl StoredState {
                 ThemeMode::Light => "light",
             }
             .into(),
-            window_material: session.appearance.window_material(),
-            backdrop_opacity: session.appearance.backdrop_opacity(),
+            appearance: session.appearance,
+            window_material: None,
+            backdrop_opacity: None,
             desktop: session.desktop.settings.clone(),
         }
     }
     pub fn appearance_settings(&self) -> (ThemeMode, AppearanceSettings) {
-        let mut settings = AppearanceSettings::default();
-        settings.set_window_material(self.window_material);
-        settings.set_backdrop_opacity(self.backdrop_opacity);
+        let mut appearance = self.appearance;
+        if let Some(material) = self.window_material {
+            appearance.set_window_material(material);
+        }
+        if let Some(opacity) = self.backdrop_opacity {
+            appearance.set_backdrop_opacity(opacity);
+        }
         (
             if self.theme == "light" {
                 ThemeMode::Light
             } else {
                 ThemeMode::Dark
             },
-            settings,
+            appearance,
         )
     }
 }
@@ -247,6 +257,8 @@ fn atomic_save(path: &Path, state: &StoredState) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nana_ui::BackdropTarget;
+
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
@@ -267,24 +279,37 @@ mod tests {
         let target = temp.0.join("new/state.json");
         fs::write(
             &legacy,
-            br#"{"room_id":"42","theme":"light","snapshots":[]}"#,
+            br#"{"room_id":"42","theme":"light","snapshots":[],"window_material":"mica","backdrop_opacity":0.7}"#,
         )
         .unwrap();
         let loaded = load_paths(target.clone(), Some(&legacy));
         assert_eq!(loaded.state.room_id, "42");
-        assert_eq!(loaded.state.appearance_settings().0, ThemeMode::Light);
+        let (theme, appearance) = loaded.state.appearance_settings();
+        assert_eq!(theme, ThemeMode::Light);
+        assert_eq!(appearance.window_material(), WindowMaterialMode::Mica);
+        assert_eq!(appearance.backdrop_opacity(), 0.7);
         assert!(target.exists());
         assert!(legacy.exists());
         assert!(!loaded.blocked);
+        let mut appearance = AppearanceSettings::default();
+        appearance.set_window_material(WindowMaterialMode::Mica);
+        appearance.set_backdrop_opacity(0.7);
+        appearance.set_backdrop_target(BackdropTarget::Main);
+        appearance.set_titlebar_follows_sidebar(false);
+        appearance.set_workspace_corners_enabled(false);
+        appearance.set_standard_radius(20.0);
         let state = StoredState {
-            window_material: WindowMaterialMode::Mica,
-            backdrop_opacity: 0.7,
+            appearance,
             ..StoredState::default()
         };
         atomic_save(&target, &state).unwrap();
         let restored = load_paths(target, None).state.appearance_settings().1;
         assert_eq!(restored.window_material(), WindowMaterialMode::Mica);
         assert_eq!(restored.backdrop_opacity(), 0.7);
+        assert_eq!(restored.backdrop_target(), BackdropTarget::Main);
+        assert!(!restored.titlebar_follows_sidebar());
+        assert!(!restored.workspace_corners_enabled());
+        assert_eq!(restored.standard_radius(), 20.0);
     }
     #[test]
     fn corrupt_state_is_preserved_until_explicit_recovery_and_backed_up() {
