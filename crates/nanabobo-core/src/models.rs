@@ -1,13 +1,25 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// 大会员类型；`None` 状态不进入模型（非会员时字段为 `None`）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VipKind {
+    Monthly,
+    Annual,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AccountSummary {
     pub mid: u64,
     pub username: String,
     pub avatar_url: Option<String>,
+    pub level: Option<u32>,
+    pub coins: Option<f64>,
+    pub bcoin: Option<f64>,
+    pub vip: Option<VipKind>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AccountStatus {
     pub authenticated: bool,
     pub account: Option<AccountSummary>,
@@ -20,7 +32,7 @@ pub struct QrStartResponse {
     pub expires_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum AuthPollResponse {
     Pending,

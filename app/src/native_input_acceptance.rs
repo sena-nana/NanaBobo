@@ -164,6 +164,10 @@ impl InputProbe {
                             mid: 1,
                             username: "本地验收".into(),
                             avatar_url: None,
+                            level: None,
+                            coins: None,
+                            bcoin: None,
+                            vip: None,
                         }),
                     }),
                 ));

@@ -13,7 +13,8 @@ use crate::session::{
 };
 use feed::Feed;
 use nana_ui::runtime::*;
-use nana_ui::ButtonKind;
+use nana_ui::{ButtonKind, PopoverPlacement};
+use nanabobo_core::models::VipKind;
 use std::sync::Arc;
 
 pub struct Shell {
@@ -184,33 +185,83 @@ impl Shell {
         Ok(())
     }
     fn sync_footer(&self, cx: &mut AppContext, s: &Session) -> Result<(), FrameworkError> {
-        let mut account = None;
+        let mut account_action = None;
         let mut settings = None;
         cx.mount(self.footer, |ui| {
-            if s.authenticated() {
-                let name = s.account_name().unwrap_or("已登录");
-                ui.child(
-                    "avatar",
-                    Avatar::new(if s.has_image(ACCOUNT_AVATAR) {
-                        ACCOUNT_AVATAR
-                    } else {
-                        ""
-                    })
-                    .size(28.0)
-                    .label(name),
+            if let Some(account) = s.account().filter(|_| s.authenticated()) {
+                let name = account.username.clone();
+                let avatar_resource = if s.has_image(ACCOUNT_AVATAR) {
+                    ACCOUNT_AVATAR
+                } else {
+                    ""
+                };
+                let mut logout_button = None;
+                ui.with_child(
+                    "account",
+                    HoverCard::new()
+                        .trigger_image(avatar_resource, name.clone())
+                        .trigger_size(28.0)
+                        .width(264.0)
+                        .placement(PopoverPlacement::Right),
+                    |ui| {
+                        ui.with_child("card-body", Stack::column(10.0).padding(14.0), |ui| {
+                            ui.with_child("header", Stack::row(10.0), |ui| {
+                                ui.child(
+                                    "avatar",
+                                    Avatar::new(avatar_resource)
+                                        .size(48.0)
+                                        .label(name.clone()),
+                                )?;
+                                ui.with_child("identity", Stack::column(2.0), |ui| {
+                                    let mut name_text = Text::new(name.clone());
+                                    let layout = Arc::make_mut(&mut name_text.style.layout);
+                                    layout.font_size = Some(15.0);
+                                    layout.font_weight = Some(600);
+                                    layout.max_width = Some(LengthSpec::Px(178.0));
+                                    layout.white_space_nowrap = true;
+                                    layout.text_overflow_ellipsis = true;
+                                    ui.child("name", name_text)?;
+                                    ui.child("uid", muted(format!("UID {}", account.mid)))?;
+                                    Ok(())
+                                })?;
+                                Ok(())
+                            })?;
+                            ui.with_child("stats", Stack::row(20.0), |ui| {
+                                let mut stats = vec![
+                                    ("level", "等级", account.level.map(|l| format!("LV{l}"))),
+                                    ("coins", "硬币", account.coins.map(amount_text)),
+                                    ("bcoin", "B币", account.bcoin.map(amount_text)),
+                                ];
+                                if let Some(vip) = account.vip {
+                                    stats.push(("vip", "会员", Some(vip_text(vip).into())));
+                                }
+                                for (key, label, value) in stats {
+                                    ui.with_child(key, Stack::column(2.0), |ui| {
+                                        let mut value_text =
+                                            Text::new(value.unwrap_or_else(|| "—".into()));
+                                        let layout =
+                                            Arc::make_mut(&mut value_text.style.layout);
+                                        layout.font_size = Some(14.0);
+                                        layout.font_weight = Some(600);
+                                        ui.child("value", value_text)?;
+                                        ui.child("label", muted(label))?;
+                                        Ok(())
+                                    })?;
+                                }
+                                Ok(())
+                            })?;
+                            logout_button = Some(ui.child(
+                                "logout",
+                                Button::new("退出登录").kind(ButtonKind::Ghost),
+                            )?);
+                            Ok(())
+                        })?;
+                        Ok(())
+                    },
                 )?;
-                let mut account_name = Text::new(name);
-                let layout = Arc::make_mut(&mut account_name.style.layout);
-                layout.max_width = Some(LengthSpec::Px(76.0));
-                layout.white_space_nowrap = true;
-                layout.text_overflow_ellipsis = true;
-                ui.child("name", account_name)?;
-                account = Some((
-                    ui.child("logout", Button::new("退出登录").kind(ButtonKind::Ghost))?,
-                    AppEvent::Logout,
-                ));
+                account_action = logout_button.map(|node| (node, AppEvent::Logout));
             } else {
-                account = Some((
+                account_action = Some((
                     ui.child(
                         "login",
                         Button::new("登录 B 站").loading(s.auth.loading() && !s.auth.open),
@@ -221,7 +272,7 @@ impl Shell {
             settings = Some(ui.child("settings", nav_row("设置", s.page == Page::Settings))?);
             Ok(())
         })?;
-        if let Some((node, event)) = account {
+        if let Some((node, event)) = account_action {
             action(cx, node, s.inbox.clone(), event)?;
         }
         action(
@@ -686,4 +737,17 @@ fn nav_row(label: &str, active: bool) -> SidebarRow {
     } else {
         SidebarRowState::Idle
     })
+}
+fn amount_text(value: f64) -> String {
+    if (value - value.trunc()).abs() < f64::EPSILON {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
+}
+fn vip_text(vip: VipKind) -> &'static str {
+    match vip {
+        VipKind::Monthly => "月度大会员",
+        VipKind::Annual => "年度大会员",
+    }
 }

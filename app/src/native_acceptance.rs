@@ -53,6 +53,10 @@ impl RuntimeProgram for NativeProbe {
                 mid: 1,
                 username: "本地验收主播".into(),
                 avatar_url: None,
+                level: None,
+                coins: None,
+                bcoin: None,
+                vip: None,
             }),
         });
         session.room.info = Some(RoomInfo {

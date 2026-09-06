@@ -223,6 +223,10 @@ mod tests {
                     mid: 1,
                     username: "A".into(),
                     avatar_url: None,
+                    level: None,
+                    coins: None,
+                    bcoin: None,
+                    vip: None,
                 }),
             }),
         ));

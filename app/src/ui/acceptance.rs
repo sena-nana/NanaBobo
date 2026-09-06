@@ -17,6 +17,10 @@ fn fixture() -> Session {
             mid: 42,
             username: "星河电台".into(),
             avatar_url: None,
+            level: None,
+            coins: None,
+            bcoin: None,
+            vip: None,
         }),
     });
     session.room.info = Some(RoomInfo {

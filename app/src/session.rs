@@ -268,13 +268,11 @@ impl Session {
             .as_ref()
             .is_some_and(|s| s.authenticated && s.account.is_some())
     }
-    pub fn account_name(&self) -> Option<&str> {
+    pub fn account(&self) -> Option<&nanabobo_core::models::AccountSummary> {
         self.auth
             .account
-            .as_ref()?
-            .account
             .as_ref()
-            .map(|a| a.username.as_str())
+            .and_then(|s| s.account.as_ref())
     }
     pub fn has_image(&self, slot: &str) -> bool {
         self.resources.ready(slot)

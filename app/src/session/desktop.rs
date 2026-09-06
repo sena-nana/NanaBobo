@@ -286,6 +286,10 @@ mod tests {
                 mid: 1,
                 username: "主播".into(),
                 avatar_url: None,
+                level: None,
+                coins: None,
+                bcoin: None,
+                vip: None,
             }),
         });
         s.room.info = Some(RoomInfo {

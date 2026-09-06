@@ -6,7 +6,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use crate::models::{AccountSummary, LiveStatus, RoomInfo};
+use crate::models::{AccountSummary, LiveStatus, RoomInfo, VipKind};
 
 const QR_GENERATE_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
 const QR_POLL_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
@@ -148,11 +148,7 @@ impl BilibiliClient {
         if !data.is_login {
             return Ok(None);
         }
-        Ok(Some(AccountSummary {
-            mid: data.mid,
-            username: data.uname,
-            avatar_url: non_empty(data.face),
-        }))
+        Ok(Some(account_summary_from_nav(data)))
     }
 
     pub async fn room_info(&self, room_id: u64) -> Result<RoomInfo, BilibiliError> {
@@ -284,6 +280,46 @@ struct NavData {
     mid: u64,
     uname: String,
     face: String,
+    #[serde(default)]
+    level_info: Option<NavLevelInfo>,
+    #[serde(default)]
+    money: Option<f64>,
+    #[serde(default)]
+    wallet: Option<NavWallet>,
+    #[serde(rename = "vipStatus", default)]
+    vip_status: Option<u8>,
+    #[serde(rename = "vipType", default)]
+    vip_type: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NavLevelInfo {
+    #[serde(default)]
+    current_level: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NavWallet {
+    #[serde(default)]
+    bcoin_balance: Option<f64>,
+}
+
+/// 上游字段缺失或异常时逐项降级为 `None`，不阻断账号信息整体解析。
+fn account_summary_from_nav(data: NavData) -> AccountSummary {
+    let vip = match (data.vip_status, data.vip_type) {
+        (Some(1), Some(1)) => Some(VipKind::Monthly),
+        (Some(1), Some(2)) => Some(VipKind::Annual),
+        _ => None,
+    };
+    AccountSummary {
+        mid: data.mid,
+        username: data.uname,
+        avatar_url: non_empty(data.face),
+        level: data.level_info.and_then(|info| info.current_level),
+        coins: data.money,
+        bcoin: data.wallet.and_then(|wallet| wallet.bcoin_balance),
+        vip,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -435,9 +471,48 @@ mod tests {
     use reqwest::header::{HeaderMap, HeaderValue, SET_COOKIE};
 
     use super::{
-        cookie_from_login_url, cookie_from_set_cookie_headers, qr_poll_state, AnchorData,
-        QrPollResult, RoomData,
+        account_summary_from_nav, cookie_from_login_url, cookie_from_set_cookie_headers,
+        qr_poll_state, AnchorData, NavData, QrPollResult, RoomData,
     };
+
+    /// nav 接口字段逐项映射到账号模型；缺失的等级/硬币/B币/会员字段降级为
+    /// `None` 而不是让整体解析失败。
+    #[test]
+    fn nav_fields_map_into_account_summary_with_graceful_gaps() {
+        let data: NavData = serde_json::from_str(
+            r#"{
+                "isLogin": true,
+                "mid": 42,
+                "uname": "娜娜",
+                "face": "http://i0.hdslb.com/bfs/face/abc.jpg",
+                "level_info": { "current_level": 6 },
+                "money": 890,
+                "wallet": { "bcoin_balance": 12.5 },
+                "vipStatus": 1,
+                "vipType": 2
+            }"#,
+        )
+        .unwrap();
+        let account = account_summary_from_nav(data);
+        assert_eq!(account.mid, 42);
+        assert_eq!(account.username, "娜娜");
+        assert_eq!(account.avatar_url.as_deref(), Some("http://i0.hdslb.com/bfs/face/abc.jpg"));
+        assert_eq!(account.level, Some(6));
+        assert_eq!(account.coins, Some(890.0));
+        assert_eq!(account.bcoin, Some(12.5));
+        assert_eq!(account.vip, Some(crate::models::VipKind::Annual));
+
+        let sparse: NavData = serde_json::from_str(
+            r#"{ "isLogin": true, "mid": 7, "uname": "user", "face": "" }"#,
+        )
+        .unwrap();
+        let account = account_summary_from_nav(sparse);
+        assert!(account.avatar_url.is_none());
+        assert!(account.level.is_none());
+        assert!(account.coins.is_none());
+        assert!(account.bcoin.is_none());
+        assert!(account.vip.is_none());
+    }
 
     #[test]
     fn login_url_is_reduced_to_supported_cookie_fields() {
