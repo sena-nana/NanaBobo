@@ -33,6 +33,12 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely.
 - 禁止添加低价值测试和硬匹配日志或字符串的测试;所有测试必须以功能为准,无功能变动则不添加测试。
 - 不覆盖用户或其他 Agent 的已有改动。
 
+## NanaUI 上游使用
+
+- NanaUI 依赖一律走 `..\.nanaui-pin` 快照路径；pin 与兄弟仓库 `..\NanaUI` 工作区是镜像，上游改动自动同步进 pin，无需拷贝。
+- 使用或理解 NanaUI 能力前，必须先读取 NanaUI 的 AGENTS.md（`..\NanaUI\AGENTS.md`，与 `..\.nanaui-pin\AGENTS.md` 同源），了解 Runtime / UiScene 渲染合同、宿主 GPU 边界与硬约束。
+- 需要界面诊断、截图或无头交互验证时，利用 `nana-ui-devtools` 的离线渲染能力：`offscreen` feature 提供离屏 Scene 绘制加 CPU 回读 PNG 快照，`agent` feature 提供 `RuntimeAgentSession` 无头 a11y / 点击调试；不要靠日志猜界面。
+
 ## NanaBobo 业务边界
 
 - `app/src/` 只负责真实可用的账号、直播工作流的 L3 界面装配；不添加未接通的占位页面、按钮或导航。
