@@ -58,11 +58,13 @@ impl InputProbe {
             .expect("runtime input");
         let update = self
             .app
-            .input_event_routed_with_disposition(
+            .input_event(
                 WindowId::PRIMARY,
-                &event,
-                None,
-                disposition,
+                nana_ui::RoutedInput {
+                    event: &event,
+                    pointer_hit: None,
+                    disposition,
+                },
                 context,
             )
             .expect("application input hook");
@@ -338,6 +340,7 @@ impl InputProbe {
             _ => unreachable!(),
         }
         self.stage += 1;
+        self.app.update(Wake, context);
         false
     }
 }
@@ -426,7 +429,7 @@ impl RuntimeProgram for InputProbe {
 pub(super) fn run_probe() {
     COMPLETED.store(false, Ordering::SeqCst);
     run_runtime::<InputProbe>(
-        RuntimeWindowSettings::new("NanaBobo 原生键盘与无障碍验收")
+        WindowDescriptor::new("NanaBobo 原生键盘与无障碍验收")
             .initial_size(1200.0, 800.0)
             .system_caption(false),
     )

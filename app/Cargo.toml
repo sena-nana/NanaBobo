@@ -24,7 +24,7 @@ nana-app-icon = { path = "../../.nanaui-pin/crates/nana-app-icon", default-featu
 
 [dependencies]
 nanabobo-core = { path = "../crates/nanabobo-core" }
-nana-ui = { path = "../../.nanaui-pin/crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls", "charts"] }
+nana-ui = { path = "../../.nanaui-pin/crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls", "charts", "wgpu-interop"] }
 nana-ui-platform = { path = "../../.nanaui-pin/crates/nana-ui-platform", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

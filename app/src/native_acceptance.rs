@@ -125,10 +125,10 @@ impl RuntimeProgram for NativeProbe {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &InputEvent,
+        routed: nana_ui::RoutedInput<'_>,
         context: &RuntimeProgramContext<Wake>,
     ) -> Result<RuntimeProgramUpdate, nana_ui::runtime::FrameworkError> {
-        self.app.input_event(id, event, context)
+        self.app.input_event(id, routed, context)
     }
     fn window_event(
         &mut self,
@@ -247,7 +247,7 @@ impl RuntimeProgram for NativeProbe {
 pub(super) fn run_probe() {
     COMPLETED.store(false, Ordering::SeqCst);
     run_runtime::<NativeProbe>(
-        RuntimeWindowSettings::new("NanaBobo 原生窗口验收")
+        WindowDescriptor::new("NanaBobo 原生窗口验收")
             .initial_size(960.0, 600.0)
             .minimum_size(960.0, 600.0)
             .system_caption(false),

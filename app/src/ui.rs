@@ -42,9 +42,9 @@ impl Shell {
         let cx = document.context_mut();
         cx.set_theme(session.theme)?;
         let (shell, nav, footer, banner, primary) = cx.build(document_id, |ui| {
-            let nav = ui.leaf(SidebarFrame::vertical_body_scroll());
-            let footer = ui.leaf(SidebarFooter::new());
-            let sidebar = ui.leaf(
+            let nav = ui.detached(SidebarFrame::vertical_body_scroll());
+            let footer = ui.detached(SidebarFooter::new());
+            let sidebar = ui.detached(
                 SidebarFrame::new()
                     .body(nav.stable_id())
                     .footer(footer.stable_id()),
@@ -53,9 +53,9 @@ impl Shell {
                 ui.adopt(nav);
                 ui.adopt(footer);
             });
-            let banner = ui.leaf(Stack::column(6.0));
-            let primary = ui.leaf(Stack::fill_column(16.0));
-            let page = ui.leaf(Stack::fill_column(12.0).padding(20.0));
+            let banner = ui.detached(Stack::column(6.0));
+            let primary = ui.detached(Stack::fill_column(16.0));
+            let page = ui.detached(Stack::fill_column(12.0).padding(20.0));
             ui.nest(page, |ui| {
                 ui.adopt(banner);
                 ui.adopt(primary);
@@ -208,9 +208,7 @@ impl Shell {
                             ui.with_child("header", Stack::row(10.0), |ui| {
                                 ui.child(
                                     "avatar",
-                                    Avatar::new(avatar_resource)
-                                        .size(48.0)
-                                        .label(name.clone()),
+                                    Avatar::new(avatar_resource).size(48.0).label(name.clone()),
                                 )?;
                                 ui.with_child("identity", Stack::column(2.0), |ui| {
                                     let mut name_text = Text::new(name.clone());
@@ -239,8 +237,7 @@ impl Shell {
                                     ui.with_child(key, Stack::column(2.0), |ui| {
                                         let mut value_text =
                                             Text::new(value.unwrap_or_else(|| "—".into()));
-                                        let layout =
-                                            Arc::make_mut(&mut value_text.style.layout);
+                                        let layout = Arc::make_mut(&mut value_text.style.layout);
                                         layout.font_size = Some(14.0);
                                         layout.font_weight = Some(600);
                                         ui.child("value", value_text)?;
@@ -434,11 +431,11 @@ impl Shell {
         if let Some(field) = field {
             let inbox = s.inbox.clone();
             cx.on_keyed(field, "input", move |_, event: &TextChanged, _| {
-                inbox.push(AppEvent::RoomIdChanged(event.value.clone()));
+                inbox.push(AppEvent::RoomIdChanged(event.value.to_string()));
             })?;
             let inbox = s.inbox.clone();
             cx.on_keyed(field, "submit", move |_, event: &TextSubmitted, _| {
-                inbox.push(AppEvent::RoomIdChanged(event.value.clone()));
+                inbox.push(AppEvent::RoomIdChanged(event.value.to_string()));
                 inbox.push(AppEvent::QueryRoom);
             })?;
         }
@@ -700,10 +697,10 @@ impl Shell {
         title: &str,
     ) -> Result<(Entity<Dialog>, Entity<Stack>), FrameworkError> {
         cx.build_detached(self.document_id, |ui| {
-            let body = ui.leaf(Stack::column(12.0).max_width(440.0));
+            let body = ui.detached(Stack::column(12.0).max_width(440.0));
             let mut surface = Dialog::new(title);
             surface.slots.body = Some(body.stable_id());
-            let dialog = ui.leaf(surface);
+            let dialog = ui.detached(surface);
             ui.nest(dialog, |ui| ui.adopt(body));
             (dialog, body)
         })

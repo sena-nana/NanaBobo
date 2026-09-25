@@ -1,5 +1,5 @@
 use image::ImageDecoder;
-use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry, HostedGpuResources};
+use nana_ui::{GpuContext, HostTexture, HostTextureAlphaMode, HostTextureRegistry};
 use std::io::Cursor;
 
 pub const ACCOUNT_AVATAR: &str = "account-avatar";
@@ -52,12 +52,12 @@ pub fn decode(slot: impl Into<String>, bytes: &[u8]) -> Option<DecodedImage> {
 }
 
 pub fn upload(
-    gpu: &HostedGpuResources,
+    gpu: &GpuContext,
     registry: &HostTextureRegistry,
     image: &DecodedImage,
     id: u64,
 ) -> wgpu::Texture {
-    let device = gpu.device();
+    let device = gpu.wgpu().device();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("nanabobo host image"),
         size: wgpu::Extent3d {
@@ -72,7 +72,7 @@ pub fn upload(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    gpu.queue().write_texture(
+    gpu.wgpu().queue().write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: &texture,
             mip_level: 0,
@@ -91,10 +91,9 @@ pub fn upload(
             depth_or_array_layers: 1,
         },
     );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     registry.register(
         image.slot.clone(),
-        HostTexture::from_wgpu(id, 1, view),
+        HostTexture::new(id, 1, &nana_ui::GpuTexture::from_wgpu(gpu, texture.clone())),
         image.width,
         image.height,
         HostTextureAlphaMode::Premultiplied,

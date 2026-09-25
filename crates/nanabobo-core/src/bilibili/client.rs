@@ -496,16 +496,18 @@ mod tests {
         let account = account_summary_from_nav(data);
         assert_eq!(account.mid, 42);
         assert_eq!(account.username, "娜娜");
-        assert_eq!(account.avatar_url.as_deref(), Some("http://i0.hdslb.com/bfs/face/abc.jpg"));
+        assert_eq!(
+            account.avatar_url.as_deref(),
+            Some("http://i0.hdslb.com/bfs/face/abc.jpg")
+        );
         assert_eq!(account.level, Some(6));
         assert_eq!(account.coins, Some(890.0));
         assert_eq!(account.bcoin, Some(12.5));
         assert_eq!(account.vip, Some(crate::models::VipKind::Annual));
 
-        let sparse: NavData = serde_json::from_str(
-            r#"{ "isLogin": true, "mid": 7, "uname": "user", "face": "" }"#,
-        )
-        .unwrap();
+        let sparse: NavData =
+            serde_json::from_str(r#"{ "isLogin": true, "mid": 7, "uname": "user", "face": "" }"#)
+                .unwrap();
         let account = account_summary_from_nav(sparse);
         assert!(account.avatar_url.is_none());
         assert!(account.level.is_none());

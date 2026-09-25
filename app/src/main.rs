@@ -15,10 +15,11 @@ use std::time::Instant;
 use nana_ui::runtime::{DocumentId, RuntimeDocument};
 use nana_ui::{
     run_runtime, HostTextureRegistry, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    RuntimeWindowSettings, ThemeMode,
+    ThemeMode,
 };
+use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    InputEvent, PointerPhase, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowRole,
+    InputEvent, PointerPhase, WindowDescriptor, WindowEvent, WindowGeometry, WindowId, WindowRole,
 };
 
 use crate::images::DecodedImage;
@@ -37,7 +38,7 @@ fn main() {
 #[cfg(not(all(test, feature = "native-acceptance")))]
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<NanaBoboProgram>(
-        RuntimeWindowSettings::new("Nana播播工具箱")
+        WindowDescriptor::new("Nana播播工具箱")
             .initial_size(1200.0, 800.0)
             .minimum_size(960.0, 600.0)
             .system_caption(false),
@@ -86,7 +87,7 @@ impl NanaBoboProgram {
                     );
                     match DesktopDanmakuView::mount(&mut document, &self.session) {
                         Ok(view) => {
-                            let mut window = RuntimeWindowSettings::new("桌面弹幕")
+                            let mut window = WindowDescriptor::new("桌面弹幕")
                                 .initial_size(settings.width as f64, settings.height as f64)
                                 .minimum_size(280.0, 240.0);
                             window.initial_position =
@@ -322,7 +323,7 @@ impl RuntimeProgram for NanaBoboProgram {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &InputEvent,
+        routed: nana_ui::RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, nana_ui::runtime::FrameworkError> {
         if let InputEvent::Pointer {
@@ -331,7 +332,7 @@ impl RuntimeProgram for NanaBoboProgram {
             x,
             y,
             ..
-        } = event
+        } = routed.event
         {
             let dragging = self
                 .desktop
