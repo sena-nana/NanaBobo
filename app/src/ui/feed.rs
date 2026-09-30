@@ -1,4 +1,5 @@
 use super::*;
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use std::collections::HashMap;
 pub(super) struct Feed {
     scroll: Entity<ScrollView>,
@@ -15,39 +16,36 @@ impl Feed {
         parent: Entity<Stack>,
         s: &Session,
     ) -> Result<Self, FrameworkError> {
-        let mut parts = None;
-        cx.mount(parent, |ui| {
+        let inbox = s.inbox.clone();
+        let (_mounted, (scroll, list)) = cx.mount_view(parent.stable_id(), || {
+            let scroll_ref = entity_ref::<ScrollView>();
+            let list_ref = entity_ref::<List>();
             let mut scroll = ScrollView::new(ScrollAxes::Vertical)
                 .label("实时弹幕")
                 .follow_end(s.danmaku.following);
-            let l = Arc::make_mut(&mut scroll.style.layout);
-            l.width = Some(LengthSpec::Fill);
-            l.height = Some(LengthSpec::Fill);
-            l.min_height = Some(LengthSpec::Px(0.0));
-            l.flex_grow = Some(1.0);
-            ui.with_child("feed", scroll, |ui| {
-                let list = ui.child("rows", List::new().label("弹幕消息"))?;
-                parts = Some(list);
-                Ok(())
-            })?;
-            Ok(())
-        })?;
-        // Resolve the retained scroll parent through the list node.
-        let list = parts.expect("list");
-        let scroll = Entity::<ScrollView>::from_stable_id(
-            cx.world()
-                .node(list.stable_id())
-                .expect("list node")
-                .parent
-                .expect("scroll"),
-        );
-        let inbox = s.inbox.clone();
-        cx.on_keyed(scroll, "reading", move |view, event: &UserScroll, _| {
-            view.follow_end = event.at_end;
-            inbox.push(AppEvent::Reading {
-                following: event.at_end,
-                offset: event.offset.y,
-            });
+            let layout = Arc::make_mut(&mut scroll.style.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.height = Some(LengthSpec::Fill);
+            layout.min_height = Some(LengthSpec::Px(0.0));
+            layout.flex_grow = Some(1.0);
+            with_refs(
+                widget(scroll)
+                    .key("feed")
+                    .entity_ref(scroll_ref)
+                    .on_cx(move |view, event: &UserScroll, _| {
+                        view.follow_end = event.at_end;
+                        inbox.push(AppEvent::Reading {
+                            following: event.at_end,
+                            offset: event.offset.y,
+                        });
+                    })
+                    .children(
+                        widget(List::new().label("弹幕消息"))
+                            .key("rows")
+                            .entity_ref(list_ref),
+                    ),
+                (scroll_ref, list_ref),
+            )
         })?;
         Ok(Self {
             scroll,
@@ -150,28 +148,38 @@ impl Feed {
         for i in window.range.clone() {
             let row = &s.danmaku.messages[i];
             let entity = self.items.entity(&row.id).expect("row");
-            cx.mount(entity, |ui| {
-                ui.child(
-                    "meta",
-                    desktop_text(
-                        format!(
-                            "{}   {}",
-                            row.message.sender_name,
-                            timestamp(row.message.sent_at)
-                        ),
-                        (s.desktop.settings.font_size - 3.0).max(12.0),
-                    ),
-                )?;
-                let mut text = desktop_text(&row.message.text, s.desktop.settings.font_size);
-                let l = Arc::make_mut(&mut text.style.layout);
-                l.width = Some(LengthSpec::Fill);
-                l.min_width = Some(LengthSpec::Px(0.0));
-                l.white_space_nowrap = false;
-                l.text_overflow_ellipsis = false;
-                l.word_break = Some(WordBreakSpec::BreakWord);
-                ui.child("message", text)?;
-                Ok(())
-            })?;
+            let meta = desktop_text(
+                format!(
+                    "{}   {}",
+                    row.message.sender_name,
+                    timestamp(row.message.sent_at)
+                ),
+                (s.desktop.settings.font_size - 3.0).max(12.0),
+            );
+            let mut message = desktop_text(&row.message.text, s.desktop.settings.font_size);
+            let layout = Arc::make_mut(&mut message.style.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.min_width = Some(LengthSpec::Px(0.0));
+            layout.white_space_nowrap = false;
+            layout.text_overflow_ellipsis = false;
+            layout.word_break = Some(WordBreakSpec::BreakWord);
+            let children = cx
+                .world()
+                .node(entity.stable_id())
+                .map(|node| node.children)
+                .unwrap_or_default();
+            if children.len() < 2 {
+                cx.mount_view(entity.stable_id(), || {
+                    (widget(meta).key("meta"), widget(message).key("message"))
+                })?;
+            } else {
+                cx.update_component(Entity::<Text>::from_stable_id(children[0]), |text, _| {
+                    *text = meta;
+                })?;
+                cx.update_component(Entity::<Text>::from_stable_id(children[1]), |text, _| {
+                    *text = message;
+                })?;
+            }
         }
         cx.update_component(self.list, |list, _| {
             let l = Arc::make_mut(&mut list.style.layout);

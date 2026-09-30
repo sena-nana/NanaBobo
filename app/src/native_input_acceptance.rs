@@ -4,7 +4,6 @@ use crate::session::{Page, Snapshot, StatsTab};
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityNode, StableNodeId,
 };
-use nana_ui::RuntimeInputAdapter;
 use nana_ui_platform::InputModifiers;
 use nanabobo_core::models::{AccountStatus, AccountSummary, LiveStatus, QrStartResponse};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,8 +11,22 @@ use std::time::Duration;
 
 static COMPLETED: AtomicBool = AtomicBool::new(false);
 
+fn route_input(
+    input: &mut nana_ui::HeadlessInput,
+    document: &mut RuntimeDocument,
+    payload: nana_ui::InputPayload,
+) -> (nana_ui::CanonicalInputEvent, nana_ui::InputRouteOutcome) {
+    let event = input.stamp(payload);
+    let outcome = document
+        .context_mut()
+        .route_input(&event, input.services_mut(), None)
+        .expect("runtime input");
+    (event, outcome)
+}
+
 struct InputProbe {
     app: NanaBoboProgram,
+    input: nana_ui::HeadlessInput,
     stage: usize,
     deadline: Instant,
     return_focus: Option<StableNodeId>,
@@ -40,30 +53,32 @@ impl InputProbe {
             .world()
             .focused(self.app.document.document())
     }
-    fn key(&mut self, key: &str, modifiers: InputModifiers, context: &RuntimeProgramContext<Wake>) {
-        let event = InputEvent::Keyboard {
-            pressed: true,
-            key: key.into(),
-            text: None,
-            code: key.into(),
-            repeat: false,
-            modifiers,
-        };
-        self.input(event, context);
+    fn key(
+        &mut self,
+        key: &'static str,
+        modifiers: InputModifiers,
+        context: &RuntimeProgramContext<Wake>,
+    ) {
+        self.deliver(
+            nana_ui::InputPayload::Key(nana_ui::KeyInput::named(
+                key,
+                key,
+                nana_ui::KeyState::Pressed,
+                modifiers,
+            )),
+            context,
+        );
     }
-    fn input(&mut self, event: InputEvent, context: &RuntimeProgramContext<Wake>) {
-        let document_id = self.app.document.document();
-        let disposition = RuntimeInputAdapter::default()
-            .dispatch(self.app.document.context_mut(), document_id, &event)
-            .expect("runtime input");
+    fn deliver(&mut self, payload: nana_ui::InputPayload, context: &RuntimeProgramContext<Wake>) {
+        let (event, outcome) = route_input(&mut self.input, &mut self.app.document, payload);
         let update = self
             .app
             .input_event(
                 WindowId::PRIMARY,
                 nana_ui::RoutedInput {
                     event: &event,
-                    pointer_hit: None,
-                    disposition,
+                    pointer_hit: outcome.pointer_hit,
+                    disposition: outcome.disposition(),
                 },
                 context,
             )
@@ -177,15 +192,8 @@ impl InputProbe {
             8 => {
                 assert!(self.app.session.authenticated());
                 self.tab_to("直播间号", context);
-                self.input(
-                    InputEvent::Keyboard {
-                        pressed: true,
-                        key: "1234".into(),
-                        text: Some("1234".into()),
-                        code: String::new(),
-                        repeat: false,
-                        modifiers: normal,
-                    },
+                self.deliver(
+                    nana_ui::InputPayload::Text(nana_ui::CommittedText::new("1234")),
                     context,
                 );
                 assert!(
@@ -364,9 +372,13 @@ impl RuntimeProgram for InputProbe {
                 live_status: LiveStatus::Live,
             })
             .collect();
+        let mut app = NanaBoboProgram::for_test(session, context)?;
+        let document_id = app.document.document();
+        let input = nana_ui::HeadlessInput::bind(app.document.context_mut(), document_id);
         Ok((
             Self {
-                app: NanaBoboProgram::for_test(session, context)?,
+                app,
+                input,
                 stage: 0,
                 deadline: Instant::now() + Duration::from_secs(45),
                 return_focus: None,

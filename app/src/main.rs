@@ -19,7 +19,7 @@ use nana_ui::{
 };
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    InputEvent, PointerPhase, WindowDescriptor, WindowEvent, WindowGeometry, WindowId, WindowRole,
+    InputPayload, PointerPhase, WindowDescriptor, WindowEvent, WindowGeometry, WindowId, WindowRole,
 };
 
 use crate::images::DecodedImage;
@@ -282,14 +282,11 @@ impl RuntimeProgram for NanaBoboProgram {
         id: WindowId,
         context: &RuntimeProgramContext<Self::Message>,
     ) {
-        let needs_layout = if id == WindowId::PRIMARY {
-            self.shell.needs_layout_sync(&self.document)
-        } else {
-            self.desktop
-                .as_ref()
-                .filter(|w| w.id == id)
-                .is_some_and(|w| w.view.needs_layout_sync(&w.document))
-        };
+        let needs_layout = self
+            .desktop
+            .as_ref()
+            .filter(|w| w.id == id)
+            .is_some_and(|w| w.view.needs_layout_sync(&w.document));
         if needs_layout {
             context.dispatch(Wake);
         }
@@ -326,23 +323,18 @@ impl RuntimeProgram for NanaBoboProgram {
         routed: nana_ui::RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, nana_ui::runtime::FrameworkError> {
-        if let InputEvent::Pointer {
-            phase: PointerPhase::Down,
-            button: 0,
-            x,
-            y,
-            ..
-        } = routed.event
-        {
+        if let InputPayload::Pointer(pointer) = &routed.event.payload {
+            if pointer.phase != PointerPhase::Down || pointer.button != 0 {
+                return Ok(RuntimeProgramUpdate::default());
+            }
+            let (x, y) = (pointer.x, pointer.y);
             let dragging = self
                 .desktop
                 .as_ref()
                 .filter(|w| w.id == id && w.passthrough_request.is_none())
                 .filter(|_| self.session.desktop.phase == session::DesktopDanmakuPhase::Adjusting)
                 .and_then(|w| w.view.drag_handle_bounds(&w.document))
-                .is_some_and(|r| {
-                    *x >= r.x && *x < r.x + r.width && *y >= r.y && *y < r.y + r.height
-                });
+                .is_some_and(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
             if dragging {
                 return Ok(RuntimeProgramUpdate {
                     window_commands: vec![WindowCommand::Drag(id)],

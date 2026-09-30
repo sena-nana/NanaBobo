@@ -124,13 +124,9 @@ impl Harness {
         }
     }
     fn needs_layout_sync(&self) -> bool {
-        self.shell
+        self.desktop
             .as_ref()
-            .is_some_and(|s| s.needs_layout_sync(self.agent.document()))
-            || self
-                .desktop
-                .as_ref()
-                .is_some_and(|s| s.needs_layout_sync(self.agent.document()))
+            .is_some_and(|view| view.needs_layout_sync(self.agent.document()))
     }
     fn node(&self, label: &str) -> AccessibilityDumpNode {
         self.agent
@@ -238,18 +234,18 @@ fn navigation_and_room_edit_use_real_pointer_and_keyboard() {
     h.sync();
     assert!(h.state.room.input.contains('6'));
     let document_id = h.agent.document().document();
-    nana_ui::RuntimeInputAdapter::default()
-        .dispatch(
+    let mut input = nana_ui::HeadlessInput::bind(h.agent.document_mut().context_mut(), document_id);
+    input
+        .press(
             h.agent.document_mut().context_mut(),
-            document_id,
-            &nana_ui_platform::InputEvent::Keyboard {
-                pressed: true,
-                key: "Enter".into(),
-                text: None,
-                code: "Enter".into(),
-                repeat: false,
-                modifiers: nana_ui_platform::InputModifiers::default(),
-            },
+            nana_ui::KeyInput::named(
+                "Enter",
+                "Enter",
+                nana_ui::KeyState::Pressed,
+                nana_ui::InputModifiers::default(),
+            ),
+            None,
+            None,
         )
         .expect("submit by Enter");
     h.sync();
@@ -308,18 +304,20 @@ impl Harness {
     fn wheel_up(&mut self) {
         let viewport = self.node("实时弹幕").bounds;
         let document = self.agent.document().document();
-        nana_ui::RuntimeInputAdapter::default()
-            .dispatch(
+        let mut input =
+            nana_ui::HeadlessInput::bind(self.agent.document_mut().context_mut(), document);
+        input
+            .route(
                 self.agent.document_mut().context_mut(),
-                document,
-                &nana_ui_platform::InputEvent::Wheel {
+                nana_ui::InputPayload::Wheel(nana_ui::WheelInput {
+                    pointer_id: nana_ui_platform::PointerId(1),
                     x: viewport.x + viewport.width * 0.5,
                     y: viewport.y + viewport.height * 0.5,
                     delta_x: 0.0,
                     delta_y: 240.0,
-                    line_delta: false,
-                    modifiers: nana_ui_platform::InputModifiers::default(),
-                },
+                    unit: nana_ui::WheelUnit::Pixels,
+                    modifiers: nana_ui::InputModifiers::default(),
+                }),
             )
             .unwrap();
         self.sync();
