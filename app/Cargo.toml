@@ -20,12 +20,12 @@ harness = false
 required-features = ["native-acceptance"]
 
 [build-dependencies]
-nana-app-icon = { path = "../../.nanaui-pin/crates/nana-app-icon", default-features = false, features = ["embed"] }
+nana-app-icon = { git = "https://github.com/sena-nana/NanaUI.git", rev = "0389e9d6197baad692f9eba8cc944afcef8a503f", package = "nana-app-icon", default-features = false, features = ["embed"] }
 
 [dependencies]
 nanabobo-core = { path = "../crates/nanabobo-core" }
-nana-ui = { path = "../../.nanaui-pin/crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls", "charts", "wgpu-interop"] }
-nana-ui-platform = { path = "../../.nanaui-pin/crates/nana-ui-platform", default-features = false }
+nana-ui = { git = "https://github.com/sena-nana/NanaUI.git", rev = "0389e9d6197baad692f9eba8cc944afcef8a503f", default-features = false, features = ["hosted", "bundled-fonts", "controls", "charts", "wgpu-interop"] }
+nana-ui-platform = { git = "https://github.com/sena-nana/NanaUI.git", rev = "0389e9d6197baad692f9eba8cc944afcef8a503f", package = "nana-ui-platform", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
@@ -34,4 +34,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 wgpu = "30.0.0"
 
 [dev-dependencies]
-nana-ui-devtools = { path = "../../.nanaui-pin/crates/nana-ui-devtools", features = ["agent"] }
+nana-ui-devtools = { git = "https://github.com/sena-nana/NanaUI.git", rev = "0389e9d6197baad692f9eba8cc944afcef8a503f", package = "nana-ui-devtools", features = ["agent"] }

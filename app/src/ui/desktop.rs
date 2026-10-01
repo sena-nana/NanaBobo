@@ -48,9 +48,11 @@ impl DesktopDanmakuView {
                     .entity_ref(root_ref)
                     .with(move |c| {
                         c.add(
-                            widget(Stack::column(8.0).padding(10.0).with_layout(|layout| {
-                                layout.background = Some([0.025, 0.03, 0.04, 0.94])
-                            }))
+                            widget(
+                                Stack::column(8.0)
+                                    .padding(10.0)
+                                    .surface(SemanticColorRole::Surface),
+                            )
                             .key("toolbar")
                             .children(dynamic(chrome, move |model| {
                                 chrome_view(model, inbox.clone(), drag_ref)

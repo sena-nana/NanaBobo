@@ -1,0 +1,78 @@
+use nana_ui::{SemanticColor, SemanticPalette, ThemeMode};
+
+const SKY_BLUE: (u8, u8, u8) = (30, 155, 245);
+
+const LIGHT: SemanticPalette = SemanticPalette {
+    background: SemanticColor::rgb8(234, 244, 251),
+    surface: SemanticColor::rgb8(255, 255, 255),
+    subtle: SemanticColor::rgb8(243, 249, 253),
+    hover: SemanticColor::rgb8(221, 238, 250),
+    active: SemanticColor::rgb8(181, 217, 242),
+    selected: SemanticColor::rgb8(211, 236, 253),
+    selected_hover: SemanticColor::rgb8(190, 226, 251),
+    selected_pressed: SemanticColor::rgb8(165, 212, 245),
+    border: SemanticColor::rgb8(203, 224, 239),
+    border_soft: SemanticColor::rgb8(225, 238, 248),
+    border_strong: SemanticColor::rgb8(159, 191, 216),
+    text: SemanticColor::rgb8(27, 47, 75),
+    muted: SemanticColor::rgb8(74, 98, 128),
+    faint: SemanticColor::rgb8(127, 149, 174),
+    accent: SemanticColor::rgb8(8, 118, 208),
+    accent_strong: SemanticColor::rgb8(7, 96, 176),
+    accent_soft: SemanticColor::rgba8(SKY_BLUE.0, SKY_BLUE.1, SKY_BLUE.2, 0.12),
+    accent_soft_hover: SemanticColor::rgba8(SKY_BLUE.0, SKY_BLUE.1, SKY_BLUE.2, 0.20),
+    accent_soft_pressed: SemanticColor::rgba8(SKY_BLUE.0, SKY_BLUE.1, SKY_BLUE.2, 0.29),
+    accent_on_soft: SemanticColor::rgb8(9, 80, 142),
+    accent_text: SemanticColor::rgb8(255, 255, 255),
+    focus_surface: SemanticColor::rgba8(7, 96, 176, 0.90),
+    focus_border: SemanticColor::rgb8(7, 96, 176),
+    focus_text: SemanticColor::rgb8(255, 255, 255),
+    highlight: SemanticColor::rgb8(14, 150, 200),
+    highlight_hover: SemanticColor::rgb8(10, 132, 180),
+    highlight_pressed: SemanticColor::rgb8(8, 114, 158),
+    highlight_text: SemanticColor::rgb8(255, 255, 255),
+    success: SemanticColor::rgb8(10, 128, 92),
+    warning: SemanticColor::rgb8(163, 100, 0),
+    danger: SemanticColor::rgb8(214, 52, 88),
+};
+
+const DARK: SemanticPalette = SemanticPalette {
+    background: SemanticColor::rgb8(14, 18, 24),
+    surface: SemanticColor::rgb8(28, 37, 49),
+    subtle: SemanticColor::rgb8(23, 31, 41),
+    hover: SemanticColor::rgb8(40, 52, 68),
+    active: SemanticColor::rgb8(56, 72, 92),
+    selected: SemanticColor::rgb8(36, 62, 92),
+    selected_hover: SemanticColor::rgb8(45, 77, 111),
+    selected_pressed: SemanticColor::rgb8(30, 52, 78),
+    border: SemanticColor::rgb8(64, 79, 98),
+    border_soft: SemanticColor::rgb8(45, 57, 72),
+    border_strong: SemanticColor::rgb8(96, 114, 137),
+    text: SemanticColor::rgb8(230, 237, 245),
+    muted: SemanticColor::rgb8(166, 181, 199),
+    faint: SemanticColor::rgb8(132, 149, 169),
+    accent: SemanticColor::rgb8(92, 184, 255),
+    accent_strong: SemanticColor::rgb8(64, 160, 240),
+    accent_soft: SemanticColor::rgba8(92, 184, 255, 0.16),
+    accent_soft_hover: SemanticColor::rgba8(92, 184, 255, 0.24),
+    accent_soft_pressed: SemanticColor::rgba8(92, 184, 255, 0.32),
+    accent_on_soft: SemanticColor::rgb8(169, 216, 255),
+    accent_text: SemanticColor::rgb8(11, 26, 42),
+    focus_surface: SemanticColor::rgba8(92, 184, 255, 0.54),
+    focus_border: SemanticColor::rgb8(92, 184, 255),
+    focus_text: SemanticColor::rgb8(255, 255, 255),
+    highlight: SemanticColor::rgb8(52, 160, 200),
+    highlight_hover: SemanticColor::rgb8(72, 178, 214),
+    highlight_pressed: SemanticColor::rgb8(40, 142, 180),
+    highlight_text: SemanticColor::rgb8(11, 26, 42),
+    success: SemanticColor::rgb8(72, 210, 150),
+    warning: SemanticColor::rgb8(255, 200, 90),
+    danger: SemanticColor::rgb8(255, 122, 150),
+};
+
+pub(super) const fn palette(mode: ThemeMode) -> SemanticPalette {
+    match mode {
+        ThemeMode::Light => LIGHT,
+        ThemeMode::Dark => DARK,
+    }
+}

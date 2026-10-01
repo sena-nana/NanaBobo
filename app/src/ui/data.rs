@@ -6,13 +6,14 @@ use nana_ui::runtime::view::{
 };
 use nana_ui::runtime::{
     AboutMetadata, AboutSection, AppearanceSection, Button, LengthSpec, ScrollAxes, ScrollView,
-    SelectChanged, SelectOption, Stack, TabOption, Tabs, TabsEvent, Text, TimeSeriesChart,
+    SelectChanged, SelectOption, SemanticColorRole, Stack, TabOption, Tabs, TabsEvent, Text,
+    TimeSeriesChart,
 };
 use nana_ui::{AppearanceEvent, AppearanceSettings, ButtonKind, ThemeMode, WindowMaterialMode};
 
 use crate::session::{live_label, timestamp, AppEvent, Inbox, Page, Session, StatsTab, Wake};
 
-use super::{heading, muted};
+use super::{columns, heading, lane, muted, panel};
 
 #[derive(Clone, PartialEq)]
 pub(super) struct HistoryRow {
@@ -102,58 +103,90 @@ pub(super) fn stats_page(
     inbox: Inbox,
 ) -> AnyView {
     let selected = stats.with_untracked(|model| tab_id(model.tab));
-    widget(Stack::fill_column(16.0))
+    scroll("直播间数据")
         .visible(move || page.get() == Page::Stats)
         .with(|c| {
             c.add(widget(heading("数据")));
-            c.add(widget(muted("按直播间查看近期趋势或完整采集记录。")));
-            c.add(
-                empty_state("还没有采集记录")
-                    .message("连接直播间后，会自动保存在线人数与关注数。")
-                    .visible(move || stats.with(|model| model.rooms.is_empty())),
-            );
-            c.add(
-                room_toolbar(stats, inbox.clone())
-                    .visible(move || stats.with(|model| !model.rooms.is_empty())),
-            );
-            c.add(
-                widget(Tabs::new(selected).options([
-                    TabOption::new("trend", "趋势").draggable(false),
-                    TabOption::new("history", "历史").draggable(false),
-                ]))
-                .visible(move || stats.with(|model| !model.rooms.is_empty()))
-                .entity_ref(tabs)
-                .bind(move |tabs| {
-                    let next: Arc<str> = stats.with(|model| tab_id(model.tab).into());
-                    if tabs.selected.as_deref() != Some(next.as_ref()) {
-                        tabs.selected = Some(next);
-                    }
-                })
-                .on({
-                    let inbox = inbox.clone();
-                    move |event: &TabsEvent| {
-                        if let TabsEvent::Select(value) = event {
-                            let tab = if value.as_ref() == "history" {
-                                StatsTab::History
-                            } else {
-                                StatsTab::Trend
-                            };
-                            inbox.push(AppEvent::SelectStatsTab(tab));
-                        }
-                    }
-                }),
-            );
-            c.add(empty_state("这个直播间还没有记录").visible(move || {
-                stats.with(|model| !model.rooms.is_empty() && model.history.is_empty())
+            c.add(widget(muted("每一次直播，都有迹可循。")));
+            c.add(widget(columns()).with(|c| {
+                c.add(widget(lane()).with(|c| {
+                    c.add(widget(panel(SemanticColorRole::Surface)).with(|c| {
+                        c.add(
+                            empty_state("还没有采集记录")
+                                .message("连接直播间后，会自动保存在线人数与关注数。")
+                                .visible(move || stats.with(|model| model.rooms.is_empty())),
+                        );
+                        c.add(
+                            widget(Tabs::new(selected).options([
+                                TabOption::new("trend", "趋势").draggable(false),
+                                TabOption::new("history", "历史").draggable(false),
+                            ]))
+                            .visible(move || stats.with(|model| !model.rooms.is_empty()))
+                            .entity_ref(tabs)
+                            .bind(move |tabs| {
+                                let next: Arc<str> = stats.with(|model| tab_id(model.tab).into());
+                                if tabs.selected.as_deref() != Some(next.as_ref()) {
+                                    tabs.selected = Some(next);
+                                }
+                            })
+                            .on({
+                                let inbox = inbox.clone();
+                                move |event: &TabsEvent| {
+                                    if let TabsEvent::Select(value) = event {
+                                        let tab = if value.as_ref() == "history" {
+                                            StatsTab::History
+                                        } else {
+                                            StatsTab::Trend
+                                        };
+                                        inbox.push(AppEvent::SelectStatsTab(tab));
+                                    }
+                                }
+                            }),
+                        );
+                        c.add(empty_state("这个直播间还没有记录").visible(move || {
+                            stats.with(|model| !model.rooms.is_empty() && model.history.is_empty())
+                        }));
+                        c.add(dynamic(stats, trend_body).visible(move || {
+                            stats.with(|model| {
+                                !model.rooms.is_empty()
+                                    && model.trend.is_some()
+                                    && model.tab == StatsTab::Trend
+                            })
+                        }));
+                        c.add(history_count(stats).visible(move || show_history(&stats)));
+                        c.add(history_columns().visible(move || show_history(&stats)));
+                        c.add(dynamic(stats, history_rows).visible(move || show_history(&stats)));
+                    }));
+                }));
+                c.add(widget(lane()).with(|c| {
+                    c.add(widget(panel(SemanticColorRole::Selected)).with(|c| {
+                        c.add(widget(heading("直播间")));
+                        c.add(widget(muted("切换直播间，查看对应的趋势与历史。")));
+                        c.add(
+                            room_toolbar(stats, inbox.clone())
+                                .visible(move || stats.with(|model| !model.rooms.is_empty())),
+                        );
+                        c.add(
+                            widget(muted("连接直播间后，这里会显示采集过的房间。"))
+                                .visible(move || stats.with(|model| model.rooms.is_empty())),
+                        );
+                    }));
+                    c.add(widget(panel(SemanticColorRole::Surface)).with(|c| {
+                        c.add(widget(heading("采样摘要")));
+                        c.add(dynamic(stats, |model| match &model.trend {
+                            Some(trend) => column()
+                                .gap(8.0)
+                                .with(|c| {
+                                    c.add(widget(Text::new(format!("{} 条记录", trend.count))));
+                                    c.add(widget(muted(format!("开始 {}", trend.start))));
+                                    c.add(widget(muted(format!("最近 {}", trend.end))));
+                                })
+                                .into_any(),
+                            None => widget(muted("尚无采样记录")).into_any(),
+                        }));
+                    }));
+                }));
             }));
-            c.add(trend_scroll(stats).visible(move || {
-                stats.with(|model| {
-                    !model.rooms.is_empty() && model.trend.is_some() && model.tab == StatsTab::Trend
-                })
-            }));
-            c.add(history_count(stats).visible(move || show_history(&stats)));
-            c.add(history_columns().visible(move || show_history(&stats)));
-            c.add(history_scroll(stats).visible(move || show_history(&stats)));
         })
         .into_any()
 }
@@ -172,7 +205,7 @@ fn tab_id(tab: StatsTab) -> &'static str {
 }
 
 fn room_toolbar(stats: Signal<StatsModel>, inbox: Inbox) -> El<Stack, Vec<AnyView>> {
-    widget(Stack::bar(12.0)).with(move |c| {
+    widget(Stack::column(12.0)).with(move |c| {
         c.add(
             select()
                 .value(move || {
@@ -208,12 +241,6 @@ fn room_toolbar(stats: Signal<StatsModel>, inbox: Inbox) -> El<Stack, Vec<AnyVie
     })
 }
 
-fn trend_scroll(stats: Signal<StatsModel>) -> El<ScrollView, Vec<AnyView>> {
-    scroll("直播间趋势").with(move |c| {
-        c.add(dynamic(stats, |model| trend_body(model)));
-    })
-}
-
 fn trend_body(model: &StatsModel) -> AnyView {
     let Some(trend) = &model.trend else {
         return ().into_any();
@@ -224,10 +251,6 @@ fn trend_body(model: &StatsModel) -> AnyView {
         .gap(10.0)
         .with(|c| {
             c.add(trend_summary(trend));
-            c.add(widget(muted(format!(
-                "采样范围 {} 至 {} · {} 条记录",
-                trend.start, trend.end, trend.count
-            ))));
             c.add(widget(heading("在线人数")));
             c.add(trend_chart(
                 trend.viewers.clone(),
@@ -290,12 +313,16 @@ fn trend_chart(
     start: String,
     end: String,
 ) -> El<TimeSeriesChart> {
-    widget(
-        TimeSeriesChart::from_samples(samples)
-            .label(label)
-            .unit("人")
-            .time_labels(start, end),
-    )
+    let mut chart = TimeSeriesChart::from_samples(samples)
+        .label(label)
+        .unit("人")
+        .time_labels(start, end);
+    let layout = Arc::make_mut(&mut chart.style.layout);
+    layout.width = Some(LengthSpec::Fill);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.height = Some(LengthSpec::Px(TimeSeriesChart::INTRINSIC_HEIGHT));
+    layout.flex_shrink = Some(1.0);
+    widget(chart)
 }
 
 fn history_count(stats: Signal<StatsModel>) -> El<Text> {
@@ -315,12 +342,6 @@ fn history_columns() -> El<Stack, Vec<AnyView>> {
         muted("关注数"),
         muted("直播状态"),
     ])
-}
-
-fn history_scroll(stats: Signal<StatsModel>) -> El<ScrollView, Vec<AnyView>> {
-    scroll("全部历史记录").with(move |c| {
-        c.add(dynamic(stats, |model| history_rows(model)));
-    })
 }
 
 fn history_rows(model: &StatsModel) -> AnyView {
@@ -346,10 +367,9 @@ fn history_line(row: &HistoryRow) -> AnyView {
 }
 
 fn history_cells(texts: [Text; 4]) -> El<Stack, Vec<AnyView>> {
-    const WIDTHS: [f32; 4] = [150.0, 100.0, 100.0, 90.0];
-    widget(Stack::bar(12.0)).with(|c| {
-        for (text, width) in texts.into_iter().zip(WIDTHS) {
-            c.add(widget(cell(text, width)));
+    widget(Stack::bar(6.0)).with(|c| {
+        for (text, grow) in texts.into_iter().zip([1.7, 1.0, 1.0, 1.0]) {
+            c.add(widget(cell(text, grow)));
         }
     })
 }
@@ -362,18 +382,25 @@ pub(super) fn settings_page(
     scroll("设置")
         .visible(move || page.get() == Page::Settings)
         .with(move |c| {
-            c.add(widget(heading("主题与窗口")));
-            c.add(widget(muted("调整应用外观与窗口材质。")));
-            c.add(dynamic(settings, {
-                let inbox = inbox.clone();
-                move |model| appearance(model, inbox.clone())
+            c.add(widget(heading("设置")));
+            c.add(widget(muted("让工具箱更合你的习惯。")));
+            c.add(widget(columns()).with(|c| {
+                c.add(widget(lane()).with(|c| {
+                    c.add(widget(heading("外观")));
+                    c.add(dynamic(settings, {
+                        let inbox = inbox.clone();
+                        move |model| appearance(model, inbox.clone())
+                    }));
+                }));
+                c.add(widget(lane()).with(|c| {
+                    c.add(dynamic(settings, {
+                        let inbox = inbox.clone();
+                        move |model| desktop_preferences(model, inbox.clone())
+                    }));
+                    c.add(widget(heading("关于")));
+                    c.add(about());
+                }));
             }));
-            c.add(dynamic(settings, {
-                let inbox = inbox.clone();
-                move |model| desktop_preferences(model, inbox.clone())
-            }));
-            c.add(widget(heading("关于")));
-            c.add(about());
         })
         .into_any()
 }
@@ -390,7 +417,7 @@ fn appearance(model: &SettingsModel, inbox: Inbox) -> AnyView {
 fn desktop_preferences(model: &SettingsModel, inbox: Inbox) -> AnyView {
     let font = model.font_size;
     let opacity = model.background_opacity;
-    widget(Stack::column(8.0).padding(14.0))
+    widget(panel(SemanticColorRole::Selected))
         .with(|c| {
             c.add(widget(heading("弹幕窗偏好")));
             c.add(widget(muted(
@@ -438,8 +465,14 @@ fn materials() -> Vec<WindowMaterialMode> {
     }
 }
 
-fn cell(mut text: Text, width: f32) -> Text {
-    Arc::make_mut(&mut text.style.layout).width = Some(LengthSpec::Px(width));
+fn cell(mut text: Text, grow: f32) -> Text {
+    let layout = Arc::make_mut(&mut text.style.layout);
+    layout.width = Some(LengthSpec::Px(0.0));
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.flex_grow = Some(grow);
+    layout.flex_shrink = Some(1.0);
+    layout.white_space_nowrap = true;
+    layout.text_overflow_ellipsis = true;
     text
 }
 
