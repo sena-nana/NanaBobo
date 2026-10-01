@@ -457,11 +457,13 @@ fn desktop_controls_and_compact_layout() {
         h.state.desktop.phase = crate::session::DesktopDanmakuPhase::Locked;
         h.state.revisions.desktop += 1;
         h.sync();
-        assert!(!h
-            .agent
-            .accessibility_dump()
-            .iter()
-            .any(|n| n.role == "button"));
+        for label in ["解锁", "关闭"] {
+            let node = h.node(label);
+            assert!(
+                node.bounds.width > 8.0 && node.bounds.height > 8.0,
+                "locked control has visible geometry: {label}"
+            );
+        }
         h.screenshot(
             &format!("desktop-locked-{width}-{scale}x"),
             (width as f32 * scale) as u32,

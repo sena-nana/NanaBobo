@@ -212,12 +212,17 @@ impl Shell {
         let overlay_changed = page_changed
             || shell_changed
             || previous.is_none_or(|(_, revisions)| revisions.overlay != session.revisions.overlay);
+        let settings_changed = page_changed
+            || shell_changed
+            || previous.is_none_or(|(_, revisions)| revisions.desktop != session.revisions.desktop);
         let cx = document.context_mut();
         if shell_changed || page_changed {
             cx.set_theme(session.theme)?;
             publish(&self.page, session.page);
             publish(&self.footer, footer_model(session));
             publish(&self.banner, banner_model(session));
+        }
+        if settings_changed {
             publish(&self.settings, data::settings_model(session));
         }
         if session.page == Page::Workbench {
@@ -478,38 +483,62 @@ fn banner_view(model: &BannerModel, inbox: Inbox) -> AnyView {
 }
 
 fn room_view(model: &RoomModel, inbox: Inbox) -> AnyView {
-    column()
-        .gap(8.0)
-        .with(|c| {
-            c.add(widget(heading("概览")));
-            if !model.authenticated {
-                c.add(text("登录 B 站，查看直播间数据并启动桌面弹幕。"));
+    let authenticated = model.authenticated;
+    let loading = model.auth_loading;
+    let editing = model.editing;
+    let info = model.info.is_some();
+    widget(
+        Stack::column(12.0)
+            .padding(16.0)
+            .surface(SemanticColorRole::Surface),
+    )
+    .with(|c| {
+        c.add(row().gap(10.0).with(|c| {
+            c.add(widget(heading("直播控制台")));
+            c.add(widget(muted(if authenticated && info {
+                "实时状态"
+            } else {
+                "等待连接"
+            })));
+        }));
+        if !authenticated {
+            c.add(widget(Stack::column(8.0).padding(12.0)).with(|c| {
+                c.add(widget(heading("连接 B 站账号")));
+                c.add(text("登录后可以查看直播间数据并启动桌面弹幕。"));
                 c.add(press_kind(
                     "登录 B 站",
                     ButtonKind::Primary,
-                    model.auth_loading,
-                    inbox,
+                    loading,
+                    inbox.clone(),
                     AppEvent::OpenLogin,
                 ));
-                return;
-            }
-            if let Some(room) = &model.info {
-                c.add(room_context(room, model.avatar, inbox.clone()));
-            }
-            if model.info.is_none() || model.editing {
+            }));
+            return;
+        }
+        if let Some(room) = &model.info {
+            c.add(room_context(room, model.avatar, inbox.clone()));
+        }
+        if model.info.is_none() || editing {
+            c.add(widget(Stack::column(8.0).padding(12.0)).with(|c| {
+                c.add(widget(muted(if editing {
+                    "切换当前直播间"
+                } else {
+                    "连接一个直播间"
+                })));
                 c.add(room_form(model, inbox.clone()));
+            }));
+        }
+        if let Some(error) = &model.error {
+            c.add(widget(ValidationMessage::new(
+                error.clone(),
+                ValidationIntent::Danger,
+            )));
+            if info && !editing {
+                c.add(press("重试刷新", inbox, AppEvent::RefreshRoom));
             }
-            if let Some(error) = &model.error {
-                c.add(widget(ValidationMessage::new(
-                    error.clone(),
-                    ValidationIntent::Danger,
-                )));
-                if model.info.is_some() && !model.editing {
-                    c.add(press("重试刷新", inbox, AppEvent::RefreshRoom));
-                }
-            }
-        })
-        .into_any()
+        }
+    })
+    .into_any()
 }
 
 fn room_context(room: &RoomInfo, avatar: bool, inbox: Inbox) -> AnyView {
@@ -522,32 +551,35 @@ fn room_context(room: &RoomInfo, avatar: bool, inbox: Inbox) -> AnyView {
         live_label(&room.live_status)
     );
     let updated = format!("更新于 {}", timestamp(room.fetched_at));
-    column()
-        .gap(6.0)
-        .with(|c| {
-            c.add(widget(Stack::row(10.0).width(LengthSpec::Fill)).with(|c| {
-                c.add(
-                    view::avatar(40.0)
-                        .resource(if avatar { ROOM_AVATAR } else { "" })
-                        .label(owner),
-                );
-                c.add(rich(title, |text| {
-                    let layout = Arc::make_mut(&mut text.style.layout);
-                    layout.width = Some(LengthSpec::Px(300.0));
-                    layout.flex_grow = Some(1.0);
-                    layout.flex_shrink = Some(1.0);
-                    layout.min_width = Some(LengthSpec::Px(0.0));
-                    layout.word_break = Some(WordBreakSpec::BreakWord);
-                }));
+    widget(
+        Stack::column(8.0)
+            .padding(12.0)
+            .surface(SemanticColorRole::Subtle),
+    )
+    .with(|c| {
+        c.add(widget(Stack::row(10.0).width(LengthSpec::Fill)).with(|c| {
+            c.add(
+                view::avatar(40.0)
+                    .resource(if avatar { ROOM_AVATAR } else { "" })
+                    .label(owner),
+            );
+            c.add(rich(title, |text| {
+                let layout = Arc::make_mut(&mut text.style.layout);
+                layout.width = Some(LengthSpec::Px(300.0));
+                layout.flex_grow = Some(1.0);
+                layout.flex_shrink = Some(1.0);
+                layout.min_width = Some(LengthSpec::Px(0.0));
+                layout.word_break = Some(WordBreakSpec::BreakWord);
             }));
-            c.add(widget(muted(details)));
-            c.add(row().gap(8.0).with(|c| {
-                c.add(press("切换直播间", inbox.clone(), AppEvent::EditRoom));
-                c.add(press("断开直播间", inbox, AppEvent::DisconnectRoom));
-                c.add(widget(muted(updated)));
-            }));
-        })
-        .into_any()
+        }));
+        c.add(widget(muted(details)));
+        c.add(row().gap(8.0).with(|c| {
+            c.add(press("切换直播间", inbox.clone(), AppEvent::EditRoom));
+            c.add(press("断开直播间", inbox, AppEvent::DisconnectRoom));
+            c.add(widget(muted(updated)));
+        }));
+    })
+    .into_any()
 }
 
 fn room_form(model: &RoomModel, inbox: Inbox) -> AnyView {
@@ -599,27 +631,41 @@ fn room_form(model: &RoomModel, inbox: Inbox) -> AnyView {
 
 fn metrics_view(model: &MetricsModel, inbox: Inbox) -> AnyView {
     let room_id = model.room_id;
-    column()
-        .gap(6.0)
-        .with(|c| {
-            c.add(row().gap(24.0).with(|c| {
-                c.add(widget(heading(model.viewers.clone())));
-                c.add(widget(heading(model.followers.clone())));
-            }));
-            if let Some(chart) = &model.chart {
-                let mut series = TimeSeriesChart::from_samples(chart.samples.clone())
-                    .label("最近人气趋势")
-                    .unit("人气")
-                    .time_labels(chart.start.clone(), chart.end.clone());
-                Arc::make_mut(&mut series.style.layout).height = Some(LengthSpec::Px(140.0));
-                c.add(widget(series));
-            }
-            c.add(widget(Button::new("查看数据")).on_activate(move || {
-                inbox.push(AppEvent::SelectHistoryRoom(room_id));
-                inbox.push(AppEvent::Navigate(Page::Stats));
-            }));
-        })
-        .into_any()
+    widget(
+        Stack::column(10.0)
+            .padding(14.0)
+            .surface(SemanticColorRole::Subtle),
+    )
+    .with(|c| {
+        c.add(widget(muted("当前直播数据")));
+        c.add(row().gap(28.0).with(|c| {
+            c.add(
+                widget(Stack::column(2.0).width(LengthSpec::Px(180.0))).with(|c| {
+                    c.add(widget(heading(model.viewers.clone())));
+                    c.add(widget(muted("在线人数")));
+                }),
+            );
+            c.add(
+                widget(Stack::column(2.0).width(LengthSpec::Px(180.0))).with(|c| {
+                    c.add(widget(heading(model.followers.clone())));
+                    c.add(widget(muted("粉丝数")));
+                }),
+            );
+        }));
+        if let Some(chart) = &model.chart {
+            let mut series = TimeSeriesChart::from_samples(chart.samples.clone())
+                .label("最近人气趋势")
+                .unit("人气")
+                .time_labels(chart.start.clone(), chart.end.clone());
+            Arc::make_mut(&mut series.style.layout).height = Some(LengthSpec::Px(140.0));
+            c.add(widget(series));
+        }
+        c.add(widget(Button::new("查看数据")).on_activate(move || {
+            inbox.push(AppEvent::SelectHistoryRoom(room_id));
+            inbox.push(AppEvent::Navigate(Page::Stats));
+        }));
+    })
+    .into_any()
 }
 
 fn launcher_view(model: &LauncherModel, inbox: Inbox) -> AnyView {
@@ -627,44 +673,50 @@ fn launcher_view(model: &LauncherModel, inbox: Inbox) -> AnyView {
         return ().into_any();
     }
     let phase = model.phase;
-    column()
-        .with(|c| {
+    widget(
+        Stack::column(10.0)
+            .padding(14.0)
+            .surface(SemanticColorRole::Subtle),
+    )
+    .with(|c| {
+        c.add(row().gap(8.0).with(|c| {
             c.add(widget(heading("桌面弹幕")));
-            c.add(text(model.status.clone()));
-            c.add(row().gap(8.0).with(|c| {
-                if matches!(
-                    phase,
-                    DesktopDanmakuPhase::Closed | DesktopDanmakuPhase::Creating
-                ) {
-                    c.add(press_kind(
-                        "启动桌面弹幕",
-                        ButtonKind::Primary,
-                        phase == DesktopDanmakuPhase::Creating,
-                        inbox.clone(),
-                        AppEvent::OpenDesktopDanmaku,
-                    ));
+            c.add(widget(muted(model.status.clone())));
+        }));
+        c.add(row().gap(8.0).with(|c| {
+            if matches!(
+                phase,
+                DesktopDanmakuPhase::Closed | DesktopDanmakuPhase::Creating
+            ) {
+                c.add(press_kind(
+                    "启动桌面弹幕",
+                    ButtonKind::Primary,
+                    phase == DesktopDanmakuPhase::Creating,
+                    inbox.clone(),
+                    AppEvent::OpenDesktopDanmaku,
+                ));
+            } else {
+                let label = if phase == DesktopDanmakuPhase::Locked {
+                    "解锁并调整"
                 } else {
-                    let label = if phase == DesktopDanmakuPhase::Locked {
-                        "解锁并调整"
-                    } else {
-                        "调整弹幕"
-                    };
-                    c.add(press(label, inbox.clone(), AppEvent::AdjustDesktopDanmaku));
-                    c.add(press(
-                        "关闭桌面弹幕",
-                        inbox.clone(),
-                        AppEvent::CloseDesktopDanmaku,
-                    ));
-                }
-            }));
-            if let Some(error) = &model.error {
-                c.add(widget(ValidationMessage::new(
-                    error.clone(),
-                    ValidationIntent::Warning,
-                )));
+                    "调整弹幕"
+                };
+                c.add(press(label, inbox.clone(), AppEvent::AdjustDesktopDanmaku));
+                c.add(press(
+                    "关闭桌面弹幕",
+                    inbox.clone(),
+                    AppEvent::CloseDesktopDanmaku,
+                ));
             }
-        })
-        .into_any()
+        }));
+        if let Some(error) = &model.error {
+            c.add(widget(ValidationMessage::new(
+                error.clone(),
+                ValidationIntent::Warning,
+            )));
+        }
+    })
+    .into_any()
 }
 
 fn login_dialog(

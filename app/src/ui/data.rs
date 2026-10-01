@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nana_ui::runtime::view::El;
 use nana_ui::runtime::view::{
-    column, dynamic, empty_state, select, widget, AnyView, EntityRef, IntoView, Signal,
+    column, dynamic, empty_state, row, select, widget, AnyView, EntityRef, IntoView, Signal,
 };
 use nana_ui::runtime::{
     AboutMetadata, AboutSection, AppearanceSection, Button, LengthSpec, ScrollAxes, ScrollView,
@@ -46,6 +46,8 @@ pub(super) struct StatsModel {
 pub(super) struct SettingsModel {
     theme: ThemeMode,
     appearance: AppearanceSettings,
+    font_size: f32,
+    background_opacity: f32,
 }
 
 pub(super) fn stats_model(session: &Session) -> StatsModel {
@@ -88,6 +90,8 @@ pub(super) fn settings_model(session: &Session) -> SettingsModel {
     SettingsModel {
         theme: session.theme,
         appearance: session.appearance,
+        font_size: session.desktop.settings.font_size,
+        background_opacity: session.desktop.settings.background_opacity,
     }
 }
 
@@ -102,6 +106,7 @@ pub(super) fn stats_page(
         .visible(move || page.get() == Page::Stats)
         .with(|c| {
             c.add(widget(heading("数据")));
+            c.add(widget(muted("按直播间查看近期趋势或完整采集记录。")));
             c.add(
                 empty_state("还没有采集记录")
                     .message("连接直播间后，会自动保存在线人数与关注数。")
@@ -218,9 +223,10 @@ fn trend_body(model: &StatsModel) -> AnyView {
     column()
         .gap(10.0)
         .with(|c| {
+            c.add(trend_summary(trend));
             c.add(widget(muted(format!(
-                "最近采集 {} · {} 条记录",
-                trend.end, trend.count
+                "采样范围 {} 至 {} · {} 条记录",
+                trend.start, trend.end, trend.count
             ))));
             c.add(widget(heading("在线人数")));
             c.add(trend_chart(
@@ -236,6 +242,44 @@ fn trend_body(model: &StatsModel) -> AnyView {
                 start,
                 end,
             ));
+        })
+        .into_any()
+}
+
+fn trend_summary(trend: &TrendModel) -> AnyView {
+    let viewers = latest_sample(&trend.viewers);
+    let followers = latest_sample(&trend.followers);
+    widget(Stack::bar(24.0))
+        .with(|c| {
+            c.add(metric("当前在线", viewers));
+            c.add(metric("关注数", followers));
+            c.add(metric("采样次数", trend.count.to_string()));
+        })
+        .into_any()
+}
+
+fn latest_sample(samples: &[(i64, Option<f64>)]) -> String {
+    samples
+        .iter()
+        .rev()
+        .find_map(|(_, value)| {
+            value.map(|value| {
+                if (value - value.trunc()).abs() < f64::EPSILON {
+                    (value as i64).to_string()
+                } else {
+                    format!("{value:.1}")
+                }
+            })
+        })
+        .unwrap_or_else(|| "—".into())
+}
+
+fn metric(label: &str, value: String) -> AnyView {
+    column()
+        .gap(2.0)
+        .with(|c| {
+            c.add(widget(muted(label)));
+            c.add(widget(heading(value)));
         })
         .into_any()
 }
@@ -318,10 +362,17 @@ pub(super) fn settings_page(
     scroll("设置")
         .visible(move || page.get() == Page::Settings)
         .with(move |c| {
+            c.add(widget(heading("主题与窗口")));
+            c.add(widget(muted("调整应用外观与窗口材质。")));
             c.add(dynamic(settings, {
                 let inbox = inbox.clone();
                 move |model| appearance(model, inbox.clone())
             }));
+            c.add(dynamic(settings, {
+                let inbox = inbox.clone();
+                move |model| desktop_preferences(model, inbox.clone())
+            }));
+            c.add(widget(heading("关于")));
             c.add(about());
         })
         .into_any()
@@ -330,8 +381,40 @@ pub(super) fn settings_page(
 fn appearance(model: &SettingsModel, inbox: Inbox) -> AnyView {
     widget(AppearanceSection::new(model.theme, model.appearance).available_materials(materials()))
         .on_cx(move |_section, event: &AppearanceEvent, cx| {
-            inbox.push(AppEvent::Appearance(*event));
+            inbox.push(AppEvent::Appearance(event.clone()));
             cx.dispatch_program(Wake);
+        })
+        .into_any()
+}
+
+fn desktop_preferences(model: &SettingsModel, inbox: Inbox) -> AnyView {
+    let font = model.font_size;
+    let opacity = model.background_opacity;
+    widget(Stack::column(8.0).padding(14.0))
+        .with(|c| {
+            c.add(widget(heading("弹幕窗偏好")));
+            c.add(widget(muted(
+                "这些设置会保存在本机，并应用到下一次弹幕窗口。",
+            )));
+            c.add(row().gap(8.0).with(|c| {
+                c.add(widget(muted(format!("字号 {font:.0} px"))));
+                c.add(widget(Button::new("A−")).on_activate({
+                    let inbox = inbox.clone();
+                    move || inbox.push(AppEvent::DesktopFontSize(font - 2.0))
+                }));
+                c.add(widget(Button::new("A+")).on_activate({
+                    let inbox = inbox.clone();
+                    move || inbox.push(AppEvent::DesktopFontSize(font + 2.0))
+                }));
+            }));
+            c.add(row().gap(8.0).with(|c| {
+                c.add(widget(muted(format!("背景透明度 {:.0}%", opacity * 100.0))));
+                let next = if opacity >= 1.0 { 0.0 } else { opacity + 0.25 };
+                c.add(widget(Button::new("调整透明度")).on_activate({
+                    let inbox = inbox.clone();
+                    move || inbox.push(AppEvent::DesktopBackgroundOpacity(next))
+                }));
+            }));
         })
         .into_any()
 }

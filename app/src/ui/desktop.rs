@@ -48,8 +48,8 @@ impl DesktopDanmakuView {
                     .entity_ref(root_ref)
                     .with(move |c| {
                         c.add(
-                            widget(Stack::column(4.0).with_layout(|layout| {
-                                layout.background = Some([0.025, 0.03, 0.04, 0.9])
+                            widget(Stack::column(8.0).padding(10.0).with_layout(|layout| {
+                                layout.background = Some([0.025, 0.03, 0.04, 0.94])
                             }))
                             .key("toolbar")
                             .children(dynamic(chrome, move |model| {
@@ -149,15 +149,29 @@ fn chrome_model(session: &Session) -> ChromeModel {
 
 fn chrome_view(model: &ChromeModel, inbox: Inbox, drag: EntityRef<Text>) -> AnyView {
     if model.locked {
-        if model.connected {
-            return ().into_any();
-        }
+        let status = model.status.clone();
+        let detail = model.connection_detail.clone();
         return column()
-            .gap(4.0)
+            .gap(6.0)
             .with(|c| {
-                c.add(widget(feed::desktop_text(&model.status, 14.0)));
-                if let Some(error) = &model.connection_detail {
-                    c.add(widget(feed::desktop_text(error, 14.0)));
+                c.add(row().gap(8.0).with(|c| {
+                    c.add(widget(feed::desktop_text("实时弹幕", 15.0)));
+                    c.add(widget(status_badge(&status, model.connected)));
+                }));
+                c.add(row().gap(8.0).with(|c| {
+                    c.add(activate(
+                        "解锁",
+                        inbox.clone(),
+                        AppEvent::AdjustDesktopDanmaku,
+                    ));
+                    c.add(activate(
+                        "关闭",
+                        inbox.clone(),
+                        AppEvent::CloseDesktopDanmaku,
+                    ));
+                }));
+                if let Some(detail) = detail {
+                    c.add(widget(feed::desktop_text(detail, 12.0)));
                 }
             })
             .into_any();
@@ -168,16 +182,21 @@ fn chrome_view(model: &ChromeModel, inbox: Inbox, drag: EntityRef<Text>) -> AnyV
     let following = model.following;
     let unread = model.unread;
     let error = model.error.clone();
+    let connected = model.connected;
+    let detail = model.connection_detail.clone();
     column()
-        .gap(4.0)
+        .gap(6.0)
         .with(move |c| {
-            c.add(
-                widget(Text::new("拖动窗口"))
-                    .key("drag-handle")
-                    .entity_ref(drag),
-            );
-            c.add(row().gap(4.0).with(|c| {
-                c.add(text(status));
+            c.add(row().gap(8.0).with(|c| {
+                c.add(widget(feed::desktop_text("实时弹幕", 15.0)));
+                c.add(widget(status_badge(&status, connected)));
+            }));
+            c.add(row().gap(8.0).with(|c| {
+                c.add(
+                    widget(feed::desktop_text("拖动窗口", 12.0))
+                        .key("drag-handle")
+                        .entity_ref(drag),
+                );
                 c.add(activate(
                     "锁定",
                     inbox.clone(),
@@ -189,7 +208,7 @@ fn chrome_view(model: &ChromeModel, inbox: Inbox, drag: EntityRef<Text>) -> AnyV
                     AppEvent::CloseDesktopDanmaku,
                 ));
             }));
-            c.add(row().gap(4.0).with(|c| {
+            c.add(row().gap(6.0).with(|c| {
                 c.add(activate(
                     "A−",
                     inbox.clone(),
@@ -221,9 +240,31 @@ fn chrome_view(model: &ChromeModel, inbox: Inbox, drag: EntityRef<Text>) -> AnyV
             }
             if let Some(error) = error {
                 c.add(text(error));
+            } else if let Some(detail) = detail {
+                c.add(widget(feed::desktop_text(detail, 12.0)));
             }
         })
         .into_any()
+}
+
+fn status_badge(status: &str, connected: bool) -> Text {
+    let label = if connected {
+        format!("● {status}")
+    } else {
+        format!("○ {status}")
+    };
+    let mut badge = feed::desktop_text(label, 12.0);
+    let layout = Arc::make_mut(&mut badge.style.layout);
+    layout.padding_left = Some(LengthSpec::Px(6.0));
+    layout.padding_right = Some(LengthSpec::Px(6.0));
+    layout.padding_top = Some(LengthSpec::Px(3.0));
+    layout.padding_bottom = Some(LengthSpec::Px(3.0));
+    layout.background = Some(if connected {
+        [0.08, 0.3, 0.2, 0.85]
+    } else {
+        [0.25, 0.22, 0.14, 0.85]
+    });
+    badge
 }
 
 fn activate(label: impl Into<String>, inbox: Inbox, event: AppEvent) -> impl IntoView {
